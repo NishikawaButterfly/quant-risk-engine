@@ -28,6 +28,12 @@ from quantrisk.metrics import (
     sharpe_ratio,
     sortino_ratio,
 )
+from quantrisk.montecarlo import (
+    MonteCarloResult,
+    Percentiles,
+    run_bootstrap,
+    run_parametric_normal,
+)
 from quantrisk.portfolio import Portfolio, correlation_matrix, covariance_matrix
 from quantrisk.series import PriceSeries, align
 
@@ -38,6 +44,8 @@ __all__ = [
     "BenchmarkComparison",
     "Drawdown",
     "FrontierPoint",
+    "MonteCarloResult",
+    "Percentiles",
     "PolicyWindow",
     "Portfolio",
     "PriceSeries",
@@ -56,6 +64,8 @@ __all__ = [
     "minimum_variance_portfolio",
     "parametric_var",
     "run_backtest",
+    "run_bootstrap",
+    "run_parametric_normal",
     "sharpe_ratio",
     "sortino_ratio",
 ]

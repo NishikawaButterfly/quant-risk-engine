@@ -51,6 +51,12 @@ under stated conventions — that is the whole product.
 - A seeded synthetic fixture: one weekday year of daily closes for
   four fictional tickers, regenerated and byte-compared in the test
   suite. Every dataset in this repository is fictional.
+- Seeded Monte Carlo on portfolios: bootstrap resampling of the
+  portfolio's historical daily returns and a parametric normal
+  alternative — both requiring an explicit seed for exact
+  reproducibility — compounded into a terminal-value distribution
+  with interpolated percentiles, the probability of finishing below
+  the initial value, and each mode's blind spot documented.
 
 Each convention — the 252-day annualization, the n − 1 volatility
 denominator, the Sortino target, the interpolated percentile, the sign
@@ -59,9 +65,8 @@ next to a hand-worked example the tests assert digit for digit.
 
 ## What does not exist yet
 
-Seeded Monte Carlo, stress scenarios, and
-reproducible reports are planned but not built. The README will say so
-when they land, and not before.
+Stress scenarios, the CLI, and reproducible reports are planned but not
+built. The README will say so when they land, and not before.
 
 ## Usage
 
