@@ -607,3 +607,61 @@ drift and volatility. `tools/make_synthetic_prices.py --seed 2026`
 reproduces the file byte for byte, and a test asserts that equality,
 so the committed fixture can never drift from its generator. No real
 market data appears anywhere in this repository.
+
+## Seeded Monte Carlo on portfolios
+
+The Monte Carlo module simulates a portfolio's terminal value: each
+run draws daily returns over a stated horizon in trading days,
+compounds them from an initial value of 1.0, and the collected runs
+form a terminal-value distribution — mean, sample standard deviation
+(n − 1, as everywhere else), the 5/25/50/75/95 percentiles, the
+probability of finishing strictly below the initial value, and the
+full sorted array of terminal values retained on the result so every
+summary figure can be recomputed and checked.
+
+The seed is a required argument on purpose: an unseeded simulation
+cannot be reproduced, so its numbers cannot be checked, and a number
+that cannot be checked does not ship. The same seed reproduces the
+same result number for number — the tests assert strict equality on
+the full percentile vector and the full terminal array — and run
+counts are bounded to [100, 20000]: fewer runs make tail percentiles
+meaningless, more buy precision the input data cannot support.
+
+### The two modes, and when each misleads
+
+**Bootstrap** resamples the portfolio's historical daily returns
+i.i.d. with replacement, so each terminal value is a product of
+factors the portfolio actually printed and lies inside
+`[(1 + min r)^h, (1 + max r)^h]` by construction; if every historical
+return is one value `r`, the whole distribution collapses to the
+single point `(1 + r)^h`. The tests assert both properties, the
+collapse exactly. The limitation is the i.i.d. assumption itself:
+independent redraws destroy autocorrelation and volatility clustering,
+so when turbulent days cluster in the history — as they do in real
+markets — multi-day drawdown risk is understated. A block bootstrap,
+which resamples contiguous runs of days to preserve short-range
+dependence, is future work; it is not silently approximated.
+
+**Parametric normal** draws each day from `N(mean, stddev)` fitted to
+the same historical returns by the sample mean and sample standard
+deviation. It fails exactly as the parametric VaR section above warns:
+daily equity returns have fatter tails than a normal distribution, so
+the simulated extremes are too mild and the tail percentiles
+understate risk precisely where they matter. The normal's unbounded
+support can also produce a daily draw below −100%, which no real
+asset return can. Treat this mode as a smooth cross-check on the
+bootstrap, never a replacement.
+
+Neither mode forecasts anything: both assume the future resembles the
+sampled history, and the outputs describe that assumption.
+
+### Percentile method
+
+Terminal-value percentiles come from `numpy.percentile` with its
+default linear interpolation between closest ranks — the sorted
+values take ranks 0 through n − 1 and the target rank for level `p`
+is `p / 100 × (n − 1)` — which is the same convention as the
+historical VaR percentile earlier in this document and matches the
+interpolated percentile used by the sibling energy-investment-lab, so
+percentiles from both engines are comparable digit for digit. The
+tests recompute the interpolation independently and assert agreement.
