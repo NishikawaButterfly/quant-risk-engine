@@ -35,6 +35,15 @@ under stated conventions — that is the whole product.
   range in the message. Expected returns must be supplied by the
   caller: historical means are available as a helper but are noisy
   estimators, and the engine never defaults to them silently.
+- Look-ahead-safe backtesting: a walk-forward engine whose policies
+  receive a `PolicyWindow` sliced strictly before the decision date —
+  the object physically contains no later data, so peeking is
+  inexpressible rather than merely forbidden, and a deliberately
+  cheating policy in the test suite proves peeking would change the
+  answer. Rebalancing runs on an explicit trading-day interval with
+  buy-and-hold drift between decisions, proportional transaction
+  costs charged on turnover at every rebalance, and a cash warmup
+  (earning zero) until the policy's declared minimum history.
 - A seeded synthetic fixture: one weekday year of daily closes for
   four fictional tickers, regenerated and byte-compared in the test
   suite. Every dataset in this repository is fictional.
@@ -46,8 +55,7 @@ next to a hand-worked example the tests assert digit for digit.
 
 ## What does not exist yet
 
-Look-ahead-safe backtesting with transaction costs and rebalancing,
-benchmark comparisons, seeded Monte Carlo, stress scenarios, and
+Benchmark comparisons, seeded Monte Carlo, stress scenarios, and
 reproducible reports are planned but not built. The README will say so
 when they land, and not before.
 

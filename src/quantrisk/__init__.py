@@ -4,6 +4,13 @@ The package computes risk and performance evidence from price data the
 caller supplies. It does not forecast anything.
 """
 
+from quantrisk.backtest import (
+    BacktestResult,
+    PolicyWindow,
+    RebalanceRecord,
+    WeightPolicy,
+    run_backtest,
+)
 from quantrisk.frontier import (
     FrontierPoint,
     annualized_mean_returns,
@@ -26,10 +33,14 @@ from quantrisk.series import PriceSeries, align
 __version__ = "0.0.1"
 
 __all__ = [
+    "BacktestResult",
     "Drawdown",
     "FrontierPoint",
+    "PolicyWindow",
     "Portfolio",
     "PriceSeries",
+    "RebalanceRecord",
+    "WeightPolicy",
     "align",
     "annualized_mean_returns",
     "annualized_volatility",
@@ -41,6 +52,7 @@ __all__ = [
     "max_drawdown",
     "minimum_variance_portfolio",
     "parametric_var",
+    "run_backtest",
     "sharpe_ratio",
     "sortino_ratio",
 ]

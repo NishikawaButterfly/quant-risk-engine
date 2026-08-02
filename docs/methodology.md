@@ -4,7 +4,7 @@ Every metric in this engine follows a stated convention, and every
 convention is exercised here on one tiny fixture a reviewer can
 recompute by hand. The test suite asserts the same digits
 (`tests/test_metrics.py`, `tests/test_portfolio.py`,
-`tests/test_frontier.py`), so the document
+`tests/test_frontier.py`, `tests/test_backtest.py`), so the document
 and the code cannot drift apart silently.
 
 Nothing in this document forecasts anything. Each number is a
@@ -379,6 +379,114 @@ frontier point undercuts the closed-form minimum. The tests assert
 that shape on a grid of targets, and separately that a deeply
 negative-return asset receives exactly zero weight in long-only
 frontiers at high targets.
+
+## Look-ahead-safe backtesting
+
+A backtest walks a weight policy forward through the aligned series:
+at each scheduled rebalance the policy is asked for target weights,
+trades execute at that day's prices, a proportional cost is charged,
+and the portfolio then drifts untouched until the next rebalance.
+Nothing here forecasts anything either — a backtest describes what a
+stated policy would have done on the supplied history, under the
+conventions below.
+
+### The look-ahead guarantee
+
+The design's core claim: a policy cannot peek, because there is
+nothing to peek at. At every decision the engine hands the policy a
+`PolicyWindow` built by *slicing* the aligned data at the decision
+date — the object physically contains the dates and prices strictly
+before that date and nothing else. Look-ahead is not a rule the policy
+is trusted to follow; the data on or after the decision date is absent
+from the only object the policy receives, so expressing a peek raises
+an error instead of returning a number. The window's constructor
+rejects any history that touches its own decision date, and the tests
+assert, for every rebalance of a run, that the window ends exactly one
+trading day before the decision date.
+
+The tests also prove peeking would change the answer: a deliberately
+cheating policy — handed the full series separately, outside the
+interface — strictly beats an honest momentum policy on a
+mean-reverting fixture where the trailing winner is always the forward
+loser. That gap is exactly why the interface must make the cheat
+inexpressible, and the same tests show the cheat's first move
+(locating the decision date in the data) raises when attempted through
+the window.
+
+### Drift versus daily rebalancing
+
+`Portfolio.return_series` weights every day's returns, which is
+implicitly rebalancing back to the target weights every day. That
+convention is exact for risk description but wrong for a backtest with
+a stated schedule: a path that trades daily while charging costs only
+at scheduled rebalances is one no real portfolio could achieve. The
+backtest therefore holds positions between decisions — buy-and-hold,
+weights drifting with prices — and trades only on rebalance days,
+where the cost is charged. With a daily schedule and zero costs the
+two conventions coincide, and a test asserts that equivalence.
+
+The schedule is an explicit interval in trading days: the first
+decision falls on the first day with the policy's declared
+`min_history_days` observed days behind it, and further decisions come
+every `schedule` trading days after that. Days before the first
+decision are held in cash, and cash earns exactly zero in this
+version — no interest convention is smuggled in. The value path stays
+flat at the initial value until the first rebalance day.
+
+### Transaction costs, worked by hand
+
+At each rebalance the drifted (pre-trade) weights are compared with
+the policy's targets. Turnover is the weight-space distance
+`sum |target − drifted|` and the charge is
+`cost_rate × turnover × pre-trade value`. The first rebalance out of
+cash has drifted weights of zero, so a fully invested long-only target
+carries turnover 1 and costs `cost_rate × value` — it is charged like
+any other rebalance, not waived.
+
+The fixture: two assets on five days, A at 100, 100, 150, 150, 150
+and B flat at 100. A constant 50/50 policy with one day of warmup,
+rebalancing every 2 trading days, cost rate 2%, initial value 1000:
+
+| Date | A | B | Event | Value |
+| --- | ---: | ---: | --- | ---: |
+| 2026-01-05 | 100 | 100 | cash warmup | 1000 |
+| 2026-01-06 | 100 | 100 | rebalance 1 | 980 |
+| 2026-01-07 | 150 | 100 | drift | 1225 |
+| 2026-01-08 | 150 | 100 | rebalance 2 | 1220.1 |
+| 2026-01-09 | 150 | 100 | drift | 1220.1 |
+
+Rebalance 1 (2026-01-06): out of cash, drifted (0, 0), target
+(0.5, 0.5), turnover |0.5 − 0| + |0.5 − 0| = 1:
+
+```text
+cost  = 0.02 × 1 × 1000 = 20
+value = 1000 − 20 = 980, invested 490 + 490
+```
+
+Drift (2026-01-07): A gains 50%, so the legs become 735 and 490 —
+value 1225, weights (0.6, 0.4). Nobody traded; prices moved.
+
+Rebalance 2 (2026-01-08): drifted (0.6, 0.4), target (0.5, 0.5),
+turnover |0.5 − 0.6| + |0.5 − 0.4| = 0.2:
+
+```text
+cost  = 0.02 × 0.2 × 1225 = 4.9
+value = 1225 − 4.9 = 1220.1, split 610.05 + 610.05
+```
+
+Nothing moves on the last day. Total costs 20 + 4.9 = 24.9; total
+return 1220.1 / 1000 − 1 = 0.2201. The tests assert every one of
+these digits, including the drifted (0.6, 0.4).
+
+### Reported figures
+
+`total_return` covers the whole value path, cash warmup included.
+`annualized_return` compounds it geometrically over the path's return
+days with the 252-day convention: `(1 + total)^(252 / (n − 1)) − 1`.
+The path's volatility and maximum drawdown reuse
+`annualized_volatility` and `max_drawdown` from the metrics module
+unchanged — the value path is itself a `PriceSeries`, so every metric
+in the engine applies to it directly.
 
 ## Synthetic sample data
 
