@@ -3,8 +3,8 @@
 Every metric in this engine follows a stated convention, and every
 convention is exercised here on one tiny fixture a reviewer can
 recompute by hand. The test suite asserts the same digits
-(`tests/test_metrics.py`), so the document and the code cannot drift
-apart silently.
+(`tests/test_metrics.py`, `tests/test_portfolio.py`), so the document
+and the code cannot drift apart silently.
 
 Nothing in this document forecasts anything. Each number is a
 description of the supplied price history, not a statement about the
@@ -164,6 +164,132 @@ returns the opposite failure matters more: returns have fatter tails
 than a normal distribution, so at high confidences (99% and beyond)
 parametric VaR systematically understates tail losses. Treat it as a
 cross-check on the historical figures, not a replacement.
+
+## Covariance and correlation
+
+Cross-asset statistics run over the simple returns of series that are
+already on one shared date grid (the alignment policy above); anything
+else is rejected, never silently truncated. Covariances are sample
+covariances — deviations from the sample mean, summed and divided by
+n − 1 — matching the sample standard deviation used everywhere else.
+
+The two-asset fixture: seven prices give six returns per asset. The
+returns were chosen so the covariance matrix lands on round numbers.
+
+| Date | A return | B return |
+| --- | ---: | ---: |
+| 2026-01-06 | 0.02 | 0.03 |
+| 2026-01-07 | -0.01 | 0.03 |
+| 2026-01-08 | -0.02 | -0.03 |
+| 2026-01-09 | 0.02 | 0.035 |
+| 2026-01-12 | 0.03 | -0.01 |
+| 2026-01-13 | 0.02 | -0.025 |
+
+Means: A `0.06 / 6 = 0.01`, B `0.03 / 6 = 0.005`. Deviations from the
+mean and their products:
+
+| Date | dev A | dev B | dev A² | dev B² | dev A · dev B |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2026-01-06 | 0.01 | 0.025 | 0.0001 | 0.000625 | 0.00025 |
+| 2026-01-07 | -0.02 | 0.025 | 0.0004 | 0.000625 | -0.0005 |
+| 2026-01-08 | -0.03 | -0.035 | 0.0009 | 0.001225 | 0.00105 |
+| 2026-01-09 | 0.01 | 0.03 | 0.0001 | 0.0009 | 0.0003 |
+| 2026-01-12 | 0.02 | -0.015 | 0.0004 | 0.000225 | -0.0003 |
+| 2026-01-13 | 0.01 | -0.03 | 0.0001 | 0.0009 | -0.0003 |
+| sum | 0 | 0 | 0.002 | 0.0045 | 0.0005 |
+
+Dividing each sum by n − 1 = 5:
+
+```text
+var(A) = 0.002  / 5 = 0.0004    stddev(A) = 0.02
+var(B) = 0.0045 / 5 = 0.0009    stddev(B) = 0.03
+cov    = 0.0005 / 5 = 0.0001
+```
+
+so the sample covariance matrix is exactly
+
+```text
+S = | 0.0004  0.0001 |
+    | 0.0001  0.0009 |
+```
+
+Correlation divides the covariance by both standard deviations:
+
+```text
+corr = 0.0001 / (0.02 * 0.03) = 1/6 = 0.166667
+```
+
+The engine pins the correlation diagonal to exactly 1.0 and clips
+off-diagonal entries into [-1, 1], removing float noise in the last
+digit; a constant-return series has zero variance, so its correlation
+is undefined and rejected.
+
+## Portfolio volatility and risk contribution
+
+A portfolio holds named weights that must sum to one (within 1e-9).
+Its daily return is the weighted sum of that day's simple returns —
+exact for a single day, and equivalent to rebalancing back to the
+target weights every day. Buy-and-hold weights would drift with
+prices; this engine does not model that drift.
+
+Weights 0.6 on A and 0.4 on B over the fixture:
+
+```text
+r(p) = (0.024, 0.006, -0.024, 0.026, 0.014, 0.002)
+```
+
+(first day: 0.6 × 0.02 + 0.4 × 0.03 = 0.024, and so on). The daily
+portfolio variance is the quadratic form w'Sw:
+
+```text
+w'Sw = 0.6² × 0.0004 + 2 × 0.6 × 0.4 × 0.0001 + 0.4² × 0.0009
+     = 0.000144 + 0.000048 + 0.000144
+     = 0.000336
+```
+
+The same number falls out of the return series directly: r(p) has mean
+0.008, squared deviations 0.000256, 0.000004, 0.001024, 0.000324,
+0.000036, 0.000036, sum 0.00168, divided by 5 = 0.000336. Annualizing
+with the usual 252-day convention:
+
+```text
+vol(p) = sqrt(0.000336 × 252) = sqrt(0.084672) = 0.290985
+```
+
+Risk contribution attributes that variance to the assets. Asset i
+contributes `w_i (Sw)_i / (w'Sw)` — its weight times its marginal
+covariance with the whole portfolio, as a fraction of total variance:
+
+```text
+(Sw)_A = 0.0004 × 0.6 + 0.0001 × 0.4 = 0.00028
+(Sw)_B = 0.0001 × 0.6 + 0.0009 × 0.4 = 0.00042
+
+RC_A = 0.6 × 0.00028 / 0.000336 = 0.000168 / 0.000336 = 0.5
+RC_B = 0.4 × 0.00042 / 0.000336 = 0.000168 / 0.000336 = 0.5
+```
+
+The numerators sum to the denominator by construction, so the
+contributions always sum to one. Here they are exactly equal: B's
+larger variance and its smaller weight cancel precisely. A short or
+strongly diversifying position can carry a negative contribution;
+shorts are allowed and flagged (`has_short_positions`), never hidden.
+
+## Diversification
+
+Individually, annualized: `vol(A) = 0.02 × sqrt(252) = 0.317490` and
+`vol(B) = 0.03 × sqrt(252) = 0.476235`. Their weighted sum is
+
+```text
+0.6 × 0.317490 + 0.4 × 0.476235 = 0.380988
+```
+
+against the portfolio's 0.290985 — a diversification benefit of
+0.090004 in annualized volatility, earned because the correlation is
+1/6 rather than 1. For a long-only portfolio the benefit is never
+negative, and it is zero exactly when every pair of held assets is
+perfectly correlated; the tests exercise both sides. With short
+positions the inequality has no guaranteed sign, which is one reason
+the flag exists.
 
 ## Synthetic sample data
 

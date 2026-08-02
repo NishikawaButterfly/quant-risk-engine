@@ -14,15 +14,19 @@ from quantrisk.metrics import (
     sharpe_ratio,
     sortino_ratio,
 )
+from quantrisk.portfolio import Portfolio, correlation_matrix, covariance_matrix
 from quantrisk.series import PriceSeries, align
 
 __version__ = "0.0.1"
 
 __all__ = [
     "Drawdown",
+    "Portfolio",
     "PriceSeries",
     "align",
     "annualized_volatility",
+    "correlation_matrix",
+    "covariance_matrix",
     "historical_cvar",
     "historical_var",
     "max_drawdown",
