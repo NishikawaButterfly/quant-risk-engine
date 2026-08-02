@@ -3,7 +3,8 @@
 Every metric in this engine follows a stated convention, and every
 convention is exercised here on one tiny fixture a reviewer can
 recompute by hand. The test suite asserts the same digits
-(`tests/test_metrics.py`, `tests/test_portfolio.py`), so the document
+(`tests/test_metrics.py`, `tests/test_portfolio.py`,
+`tests/test_frontier.py`), so the document
 and the code cannot drift apart silently.
 
 Nothing in this document forecasts anything. Each number is a
@@ -290,6 +291,94 @@ negative, and it is zero exactly when every pair of held assets is
 perfectly correlated; the tests exercise both sides. With short
 positions the inequality has no guaranteed sign, which is one reason
 the flag exists.
+
+## Minimum variance and the efficient frontier
+
+The frontier machinery takes two inputs of very different standing.
+The daily covariance matrix comes from the engine itself — here the
+two-asset fixture above. Expected *annual* returns must be supplied by
+the caller. The obvious candidate, the historical mean
+(`annualized_mean_returns`), is a noisy estimator: its standard error
+is the volatility over the square root of the sample size, comparable
+to the mean itself on realistic daily windows. On this fixture it
+yields A `0.01 × 252 = 2.52` and B `0.005 × 252 = 1.26` — six days of
+data annualized into a 252% "expected return", which is exactly why
+the engine never defaults to it. The examples below use supplied round
+values:
+
+```text
+μ = (0.05, 0.10)        S = | 0.0004  0.0001 |
+                            | 0.0001  0.0009 |
+```
+
+### The minimum-variance portfolio
+
+Minimizing `w'Sw` subject only to `1'w = 1` gives the Lagrangian
+condition `Sw = λ1`: the weights solve one linear system, then rescale
+to sum to one. The code hands that system to `numpy.linalg.solve` —
+forming an explicit inverse would cost more and lose accuracy roughly
+with the square of the matrix's condition number, and only `S⁻¹1` is
+ever needed. By hand, with the 2×2 inverse formula:
+
+```text
+det  = 0.0004 × 0.0009 − 0.0001² = 3.6e-7 − 0.1e-7 = 3.5e-7
+
+S⁻¹1 = (1/det) | 0.0009  −0.0001 | |1|  = (1/det) (0.0008, 0.0003)
+               | −0.0001  0.0004 | |1|
+
+w    = (0.0008, 0.0003) / (0.0008 + 0.0003)
+     = (8/11, 3/11) = (0.727273, 0.272727)
+```
+
+The minimized daily variance is `1/(1'S⁻¹1) = 3.5e-7 / 0.0011 =
+7/22000 = 0.000318182`, which the quadratic form confirms:
+
+```text
+w'Sw = (8² × 0.0004 + 2 × 8 × 3 × 0.0001 + 3² × 0.0009) / 11²
+     = (0.0256 + 0.0048 + 0.0081) / 121 = 0.0385 / 121 = 7/22000
+vol  = sqrt(7/22000 × 252) = sqrt(0.080182) = 0.283164
+```
+
+With the supplied μ its expected return is
+`(8 × 0.05 + 3 × 0.10) / 11 = 0.7/11 = 0.063636`.
+
+### One frontier point
+
+A frontier point minimizes the same variance under one more equality:
+`μ'w = target`. With two assets the two constraints pin the weights
+completely — there is nothing left to minimize — so the point at
+target 0.08 is pure algebra:
+
+```text
+w_A + w_B = 1        0.05 w_A + 0.10 w_B = 0.08
+w_A  = (0.10 − 0.08) / (0.10 − 0.05) = 0.4        w_B = 0.6
+
+w'Sw = 0.16 × 0.0004 + 2 × 0.24 × 0.0001 + 0.36 × 0.0009
+     = 0.000064 + 0.000048 + 0.000324 = 0.000436
+vol  = sqrt(0.000436 × 252) = sqrt(0.109872) = 0.331469
+```
+
+The tests assert every digit of both portfolios against the solver's
+output. With three or more assets the constraints stop pinning the
+weights and the quadratic program does real work; SLSQP solves it, and
+its answer is validated — success flag, weight-sum and target-return
+residuals within 1e-8, no long-only weight below zero — never trusted.
+
+### Reachability and shape
+
+Long-only, the achievable expected returns are exactly the interval
+between the worst and the best single asset; targets outside it are
+rejected up front with that interval in the message. Without bounds,
+leverage reaches any target — here 0.12 needs `w = (−0.4, 1.4)` —
+unless every asset carries the same expected return, in which case
+only that value is achievable and anything else is rejected.
+
+Volatility along the frontier falls as the target rises toward the
+minimum-variance return (0.063636 above) and rises past it, and no
+frontier point undercuts the closed-form minimum. The tests assert
+that shape on a grid of targets, and separately that a deeply
+negative-return asset receives exactly zero weight in long-only
+frontiers at high targets.
 
 ## Synthetic sample data
 

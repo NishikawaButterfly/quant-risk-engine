@@ -28,6 +28,13 @@ under stated conventions — that is the whole product.
   `w'Σw × 252`, per-asset risk contributions that sum to one, and the
   diversification benefit against the weighted sum of individual
   volatilities. Short positions are allowed and flagged, never hidden.
+- The efficient frontier: the unconstrained minimum-variance portfolio
+  in closed form via the normal equations (solved, never inverted),
+  SLSQP for long-only bounds and target-return sweeps with every solver
+  answer validated, and unreachable targets rejected with the reachable
+  range in the message. Expected returns must be supplied by the
+  caller: historical means are available as a helper but are noisy
+  estimators, and the engine never defaults to them silently.
 - A seeded synthetic fixture: one weekday year of daily closes for
   four fictional tickers, regenerated and byte-compared in the test
   suite. Every dataset in this repository is fictional.
@@ -39,8 +46,7 @@ next to a hand-worked example the tests assert digit for digit.
 
 ## What does not exist yet
 
-Correlations and risk contribution, the efficient frontier,
-look-ahead-safe backtesting with transaction costs and rebalancing,
+Look-ahead-safe backtesting with transaction costs and rebalancing,
 benchmark comparisons, seeded Monte Carlo, stress scenarios, and
 reproducible reports are planned but not built. The README will say so
 when they land, and not before.

@@ -4,6 +4,12 @@ The package computes risk and performance evidence from price data the
 caller supplies. It does not forecast anything.
 """
 
+from quantrisk.frontier import (
+    FrontierPoint,
+    annualized_mean_returns,
+    efficient_frontier,
+    minimum_variance_portfolio,
+)
 from quantrisk.metrics import (
     Drawdown,
     annualized_volatility,
@@ -21,15 +27,19 @@ __version__ = "0.0.1"
 
 __all__ = [
     "Drawdown",
+    "FrontierPoint",
     "Portfolio",
     "PriceSeries",
     "align",
+    "annualized_mean_returns",
     "annualized_volatility",
     "correlation_matrix",
     "covariance_matrix",
+    "efficient_frontier",
     "historical_cvar",
     "historical_var",
     "max_drawdown",
+    "minimum_variance_portfolio",
     "parametric_var",
     "sharpe_ratio",
     "sortino_ratio",
