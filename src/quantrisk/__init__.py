@@ -36,6 +36,13 @@ from quantrisk.montecarlo import (
 )
 from quantrisk.portfolio import Portfolio, correlation_matrix, covariance_matrix
 from quantrisk.series import PriceSeries, align
+from quantrisk.stress import (
+    ShockStressResult,
+    StressWindow,
+    WindowStressResult,
+    historical_stress,
+    shock_stress,
+)
 
 __version__ = "0.0.1"
 
@@ -50,7 +57,10 @@ __all__ = [
     "Portfolio",
     "PriceSeries",
     "RebalanceRecord",
+    "ShockStressResult",
+    "StressWindow",
     "WeightPolicy",
+    "WindowStressResult",
     "align",
     "annualized_mean_returns",
     "annualized_volatility",
@@ -59,6 +69,7 @@ __all__ = [
     "covariance_matrix",
     "efficient_frontier",
     "historical_cvar",
+    "historical_stress",
     "historical_var",
     "max_drawdown",
     "minimum_variance_portfolio",
@@ -67,5 +78,6 @@ __all__ = [
     "run_bootstrap",
     "run_parametric_normal",
     "sharpe_ratio",
+    "shock_stress",
     "sortino_ratio",
 ]
