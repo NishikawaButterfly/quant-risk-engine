@@ -44,6 +44,10 @@ under stated conventions — that is the whole product.
   buy-and-hold drift between decisions, proportional transaction
   costs charged on turnover at every rebalance, and a cash warmup
   (earning zero) until the policy's declared minimum history.
+- Benchmark comparison: beta, arithmetic CAPM alpha (daily and
+  annualized), tracking error, information ratio, and up/down capture
+  ratios over paired return series, with undefined cases reported as
+  `None` for stated reasons rather than as fabricated numbers.
 - A seeded synthetic fixture: one weekday year of daily closes for
   four fictional tickers, regenerated and byte-compared in the test
   suite. Every dataset in this repository is fictional.
@@ -55,7 +59,7 @@ next to a hand-worked example the tests assert digit for digit.
 
 ## What does not exist yet
 
-Benchmark comparisons, seeded Monte Carlo, stress scenarios, and
+Seeded Monte Carlo, stress scenarios, and
 reproducible reports are planned but not built. The README will say so
 when they land, and not before.
 
