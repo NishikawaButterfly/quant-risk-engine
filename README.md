@@ -22,6 +22,12 @@ under stated conventions — that is the whole product.
   maximum drawdown with its peak and trough dates, historical VaR and
   CVaR at any confidence, and parametric (normal) VaR with a
   documented warning about its thin tails.
+- Correlations and risk contribution: sample covariance and
+  correlation matrices over aligned series, and a `Portfolio` of named
+  weights — daily weighted return series, annualized volatility via
+  `w'Σw × 252`, per-asset risk contributions that sum to one, and the
+  diversification benefit against the weighted sum of individual
+  volatilities. Short positions are allowed and flagged, never hidden.
 - A seeded synthetic fixture: one weekday year of daily closes for
   four fictional tickers, regenerated and byte-compared in the test
   suite. Every dataset in this repository is fictional.
