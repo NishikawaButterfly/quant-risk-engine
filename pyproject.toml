@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-risk-engine"
+version = "0.0.1"
+description = "Reproducible portfolio-analytics and market-risk engine for public securities"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "NishikawaButterfly" }]
+dependencies = [
+  "numpy>=2.0,<3",
+  "scipy>=1.13,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "coverage[toml]==7.15.2",
+  "mypy==2.3.0",
+  "ruff==0.16.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/NishikawaButterfly/quant-risk-engine"
+Issues = "https://github.com/NishikawaButterfly/quant-risk-engine/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+quantrisk = ["py.typed"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "S", "PTH", "PL", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "PLR2004"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["src/quantrisk"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
