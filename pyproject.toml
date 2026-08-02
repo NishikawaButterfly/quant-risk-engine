@@ -44,7 +44,7 @@ select = ["E", "F", "W", "I", "UP", "B", "S", "PTH", "PL", "RUF"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "tools"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
