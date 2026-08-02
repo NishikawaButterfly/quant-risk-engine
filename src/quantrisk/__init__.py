@@ -11,6 +11,7 @@ from quantrisk.backtest import (
     WeightPolicy,
     run_backtest,
 )
+from quantrisk.benchmark import BenchmarkComparison, compare_to_benchmark
 from quantrisk.frontier import (
     FrontierPoint,
     annualized_mean_returns,
@@ -34,6 +35,7 @@ __version__ = "0.0.1"
 
 __all__ = [
     "BacktestResult",
+    "BenchmarkComparison",
     "Drawdown",
     "FrontierPoint",
     "PolicyWindow",
@@ -44,6 +46,7 @@ __all__ = [
     "align",
     "annualized_mean_returns",
     "annualized_volatility",
+    "compare_to_benchmark",
     "correlation_matrix",
     "covariance_matrix",
     "efficient_frontier",

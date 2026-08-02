@@ -488,6 +488,116 @@ The path's volatility and maximum drawdown reuse
 unchanged — the value path is itself a `PriceSeries`, so every metric
 in the engine applies to it directly.
 
+## Benchmark comparison
+
+Benchmark statistics run over two return sequences paired on the same
+date grid — the caller aligns the price series first (the alignment
+policy above) and supplies the resulting returns; the engine re-checks
+lengths, finiteness, and a minimum of three observations, since a line
+fits any two points exactly. All second moments are sample moments
+(n − 1), matching the rest of the engine. The risk-free rate here is a
+*daily* rate, zero by default, and enters only the alpha: a constant
+drops out of every covariance, so beta and the active-return
+statistics never see it.
+
+The hand-worked fixture, six pairs of daily returns
+(`tests/test_benchmark.py` asserts every digit):
+
+| Day | Portfolio p | Benchmark b |
+| --- | ---: | ---: |
+| 1 | 0.04 | 0.02 |
+| 2 | 0.00 | -0.01 |
+| 3 | 0.06 | 0.03 |
+| 4 | -0.03 | -0.02 |
+| 5 | 0.03 | 0.02 |
+| 6 | 0.02 | 0.02 |
+
+Means: p `0.12 / 6 = 0.02`, b `0.06 / 6 = 0.01`. Deviations from the
+means and their products:
+
+| Day | dev p | dev b | dev b² | dev p · dev b |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.02 | 0.01 | 0.0001 | 0.0002 |
+| 2 | -0.02 | -0.02 | 0.0004 | 0.0004 |
+| 3 | 0.04 | 0.02 | 0.0004 | 0.0008 |
+| 4 | -0.05 | -0.03 | 0.0009 | 0.0015 |
+| 5 | 0.01 | 0.01 | 0.0001 | 0.0001 |
+| 6 | 0.00 | 0.01 | 0.0001 | 0.0000 |
+| sum | 0 | 0 | 0.002 | 0.003 |
+
+### Beta
+
+The slope of the sample regression of p on b: covariance over
+benchmark variance, both with denominator n − 1 = 5:
+
+```text
+cov(p, b) = 0.003 / 5 = 0.0006
+var(b)    = 0.002 / 5 = 0.0004
+beta      = 0.0006 / 0.0004 = 3/2 = 1.5
+```
+
+A constant-return benchmark has zero variance — the denominator holds
+no information — and is rejected rather than divided by.
+
+### Alpha
+
+The arithmetic CAPM residual over excess returns, per day, then times
+252. With the default zero risk-free rate:
+
+```text
+alpha (daily)  = 0.02 - 1.5 × 0.01 = 0.005
+alpha (annual) = 0.005 × 252 = 1.26
+```
+
+The annualization is arithmetic — the daily residual times 252 — not
+geometric compounding. Alpha is a regression intercept, not a return
+anyone can hold; compounding it as `(1 + a)^252 − 1` would smuggle a
+growth model into a linear residual, while the arithmetic convention
+keeps the exact identity that adding a constant `c` to every portfolio
+return moves annual alpha by exactly `252 c` (a property test asserts
+it). The 1.26 itself — a 126% annual alpha from six good days — is the
+same annualize-a-tiny-sample absurdity flagged in the frontier
+section, on display rather than hidden. With a nonzero daily rate
+`rf`, alpha becomes `(mean p − rf) − beta × (mean b − rf)`, a shift of
+exactly `(beta − 1) × rf` per day; beta is unchanged.
+
+### Tracking error and information ratio
+
+Active returns `a = p − b`, per day:
+
+```text
+a      = (0.02, 0.01, 0.03, -0.01, 0.01, 0.00)
+mean   = 0.06 / 6 = 0.01
+devs   = 0.01, 0.00, 0.02, -0.02, 0.00, -0.01
+var    = (0.0001 + 0 + 0.0004 + 0.0004 + 0 + 0.0001) / 5 = 0.0002
+TE     = sqrt(0.0002) × sqrt(252) = sqrt(0.0504) = 0.224499
+IR     = (0.01 × 252) / sqrt(0.0504) = sqrt(126) = 11.224972
+```
+
+The information ratio is the annualized mean active return over the
+tracking error. A zero tracking error means the active return is
+constant — the portfolio is the benchmark plus a fixed daily offset —
+so the ratio has a zero denominator and is reported as `None`, not a
+number and not an exception: unlike a constant benchmark, the
+comparison itself is legitimate and every other statistic stands.
+
+### Capture ratios
+
+Each side conditions on the benchmark's sign; a day the benchmark
+returned exactly zero belongs to neither. The benchmark rose on days
+1, 3, 5, 6 and fell on exactly two days, 2 and 4:
+
+```text
+up   = (0.15 / 4) / (0.09 / 4)   = 0.0375 / 0.0225  = 5/3 = 1.666667
+down = (-0.03 / 2) / (-0.03 / 2) = -0.015 / -0.015  = 1.0
+```
+
+The portfolio captured five-thirds of the benchmark's rises and
+exactly its falls — beta above one bought the upside without, on this
+fixture, extra downside. A benchmark that never fell has no falling
+days to measure, so that side's ratio is `None` rather than a
+fabricated number; the tests exercise both empty sides.
+
 ## Synthetic sample data
 
 `sample-data/prices.csv` holds one weekday year (2025, 261 rows) of
