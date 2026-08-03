@@ -49,8 +49,10 @@ under stated conventions — that is the whole product.
   (earning zero) until the policy's declared minimum history.
 - Benchmark comparison: beta, arithmetic CAPM alpha (daily and
   annualized), tracking error, information ratio, and up/down capture
-  ratios over paired return series, with undefined cases reported as
-  `None` for stated reasons rather than as fabricated numbers.
+  ratios over the portfolio's and the benchmark's returns on one
+  verified shared date grid — series on mismatched grids are rejected,
+  not paired — with undefined cases reported as `None` for stated
+  reasons rather than as fabricated numbers.
 - A seeded synthetic fixture: one weekday year of daily closes for
   four fictional tickers, regenerated and byte-compared in the test
   suite. Every dataset in this repository is fictional.

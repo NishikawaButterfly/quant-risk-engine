@@ -34,6 +34,7 @@ from quantrisk.metrics import (
     sortino_ratio,
 )
 from quantrisk.portfolio import Portfolio
+from quantrisk.series import PriceSeries
 
 RETURNS = (0.01, 0.02, -0.03, 0.04, -0.02)
 NON_FINITE = (math.nan, math.inf, -math.inf)
@@ -138,22 +139,47 @@ class MetricsScalarBoundaryTests(unittest.TestCase):
 
 
 class BenchmarkBoundaryTests(unittest.TestCase):
-    PORTFOLIO = (0.01, 0.02, -0.03, 0.04)
-    BENCHMARK = (0.02, 0.01, -0.02, 0.03)
+    """The dated comparison's remaining number boundary: the rate.
 
-    def test_boolean_portfolio_returns_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, r"portfolio return \[1\] is not a number"):
-            compare_to_benchmark((0.01, True, -0.03, 0.04), self.BENCHMARK)
+    Boolean/NaN *returns* no longer have a boundary here: the comparison
+    derives both return series from PriceSeries and Portfolio inputs
+    validated at construction (tests/test_series.py and this file), and
+    the derived returns re-check through the shared path
+    (tests/test_benchmark.py's nonfinite-returns test).
+    """
 
-    def test_boolean_benchmark_returns_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, r"benchmark return \[3\] is not a number"):
-            compare_to_benchmark(self.PORTFOLIO, (0.02, 0.01, -0.02, False))
+    DATES = ("2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09")
+    PRICES = (64.0, 80.0, 60.0, 90.0, 67.5)
+    HELD = Portfolio(names=("P1", "P2"), weights=(0.5, 0.5))
+    SLEEVES = (
+        PriceSeries(name="P1", dates=DATES, prices=PRICES),
+        PriceSeries(name="P2", dates=DATES, prices=PRICES),
+    )
+    BENCHMARK = PriceSeries(name="NNN", dates=DATES, prices=(64.0, 72.0, 63.0, 70.875, 62.015625))
+
+    def compare(self, risk_free_rate_daily: Any) -> Any:
+        return compare_to_benchmark(
+            self.HELD, self.SLEEVES, self.BENCHMARK, risk_free_rate_daily=risk_free_rate_daily
+        )
+
+    def test_the_risk_free_rate_rejects_non_finite_and_boolean_values(self) -> None:
+        for value in NON_FINITE:
+            with self.assertRaisesRegex(ValueError, "risk_free_rate_daily is .*; it must be"):
+                self.compare(value)
+        for value in BOOLEANS:
+            with self.assertRaisesRegex(ValueError, "risk_free_rate_daily is not a number"):
+                self.compare(value)
 
     def test_numpy_scalars_pass_through_the_comparison(self) -> None:
+        # numpy prices pass PriceSeries validation (numbers.Real), and a
+        # numpy rate passes the comparison's own scalar boundary.
+        benchmark = PriceSeries(
+            name="NNN",
+            dates=self.DATES,
+            prices=tuple(np.float64(price) for price in self.BENCHMARK.prices),
+        )
         result = compare_to_benchmark(
-            tuple(np.float64(value) for value in self.PORTFOLIO),
-            self.BENCHMARK,
-            risk_free_rate_daily=np.float64(0.0001),
+            self.HELD, self.SLEEVES, benchmark, risk_free_rate_daily=np.float64(0.0001)
         )
         self.assertTrue(math.isfinite(result.beta))
 

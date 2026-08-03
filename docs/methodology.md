@@ -566,18 +566,28 @@ in the engine applies to it directly.
 
 ## Benchmark comparison
 
-Benchmark statistics run over two return sequences paired on the same
-date grid — the caller aligns the price series first (the alignment
-policy above) and supplies the resulting returns; the engine re-checks
-lengths, finiteness, and a minimum of three observations, since a line
-fits any two points exactly. All second moments are sample moments
-(n − 1), matching the rest of the engine. The risk-free rate here is a
-*daily* rate, zero by default, and enters only the alpha: a constant
-drops out of every covariance, so beta and the active-return
-statistics never see it.
+Benchmark statistics run over the portfolio's daily returns and the
+benchmark's, paired date by date on one shared grid. The comparison
+takes the dated inputs themselves — the portfolio's weights over its
+aligned asset series, and the benchmark's price series — and verifies
+the grid instead of trusting it: every series must carry identical
+dates, and a benchmark on any other grid is rejected with instructions
+to run the alignment first, because two return sequences of equal
+length prove nothing about their dates. Alignment itself stays the
+caller's visible act under the intersection policy above: dates the
+benchmark and the assets do not share are dropped by `align`, never
+silently inside a statistic, and the returns that remain compound
+across the dropped dates. The shared grid must yield at least three
+paired returns (four shared dates), since a line fits any two points
+exactly, and both return series are re-checked finite. All second
+moments are sample moments (n − 1), matching the rest of the engine.
+The risk-free rate here is a *daily* rate, zero by default, and enters
+only the alpha: a constant drops out of every covariance, so beta and
+the active-return statistics never see it.
 
-The hand-worked fixture, six pairs of daily returns
-(`tests/test_benchmark.py` asserts every digit):
+The hand-worked fixture, six pairs of daily returns — the tests rebuild
+them from dated price series and assert every digit shown here
+(`tests/test_benchmark.py`):
 
 | Day | Portfolio p | Benchmark b |
 | --- | ---: | ---: |
