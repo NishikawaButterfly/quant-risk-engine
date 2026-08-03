@@ -380,6 +380,63 @@ that shape on a grid of targets, and separately that a deeply
 negative-return asset receives exactly zero weight in long-only
 frontiers at high targets.
 
+## Numerical conditioning
+
+Every covariance matrix entering the engine — the portfolio methods
+and the frontier solvers alike — passes through one validation path
+before any arithmetic runs. The matrix must be square, finite,
+symmetric within 1e-12, and positive semidefinite: one
+`numpy.linalg.eigvalsh` decomposition checks the eigenvalues against
+the relative floor
+
+```text
+min_eig >= -1e-10 × max(1, max_eig)
+```
+
+and an indefinite matrix is rejected with the offending eigenvalue
+named. The floor exists because the *computed* sample covariance of
+near-collinear return series can carry a tiny negative eigenvalue that
+is pure floating-point rounding on a matrix that is PSD by
+construction; rejecting it would reject legitimate data. A genuinely
+indefinite matrix — which no return data can produce — lands far below
+the floor and is refused.
+
+The same decomposition yields the 2-norm condition number, the largest
+eigenvalue magnitude over the smallest (infinite for an exactly
+singular matrix). On the hand fixture the eigenvalues are
+(13 ± √29)e-4 / 2, so
+
+```text
+cond2 = (13 + √29) / (13 − √29) = 2.414388
+```
+
+— thoroughly well conditioned. The number matters because the
+minimum-variance weights come from solving `Σx = 1`, and a linear
+solve amplifies relative input error by up to cond2: a covariance
+known to 12 digits fed through a matrix at cond2 = 1e9 yields weights
+trustworthy to about 3. Two thresholds apply, both deliberately
+asymmetric about what they protect:
+
+- **Above 1e8** (warn): results still compute, but they carry a
+  `conditioning_warning` — on every `FrontierPoint`, in the
+  portfolio's `covariance_diagnostics`, and in `results.json` — and
+  the CLI report surfaces it under Caveats. The condition number
+  itself is always exposed alongside.
+- **Above 1e12** (refuse): the frontier functions refuse with a clear
+  message instead of solving. At that conditioning fewer than four
+  significant digits survive the solve, so the "weights" would be
+  noise formatted as precision; an error the caller sees beats a
+  confident number nobody can trust. The portfolio's own methods
+  (volatility, risk contributions, diversification) never refuse on
+  conditioning, because quadratic forms like `w'Sw` involve no
+  inverse and do not amplify error this way — for them the condition
+  number is disclosure, not a gate.
+
+The previously existing late guards — the negative-variance check and
+the singular-solve rejection — stay in the code as defense in depth,
+but validation now happens at entry, so bad matrices are named for
+what they are instead of surfacing as solver failures.
+
 ## Look-ahead-safe backtesting
 
 A backtest walks a weight policy forward through the aligned series:

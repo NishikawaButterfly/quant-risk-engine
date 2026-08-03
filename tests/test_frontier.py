@@ -10,7 +10,11 @@ from quantrisk.frontier import (
     efficient_frontier,
     minimum_variance_portfolio,
 )
-from quantrisk.portfolio import covariance_matrix
+from quantrisk.portfolio import (
+    CONDITION_NUMBER_REFUSE_LIMIT,
+    CONDITION_NUMBER_WARN_LIMIT,
+    covariance_matrix,
+)
 from quantrisk.series import PriceSeries
 
 DATES = (
@@ -230,21 +234,28 @@ class ValidationTests(unittest.TestCase):
             minimum_variance_portfolio(((-0.0004, 0.0001), (0.0001, 0.0009)))
 
     def test_singular_covariance_is_rejected(self) -> None:
-        # The second row is exactly half the first: det = 0.
+        # The second row is exactly half the first: det = 0, condition
+        # number infinite. The conditioning gate refuses it at entry,
+        # before any solve could run.
         with self.assertRaisesRegex(ValueError, "singular"):
             minimum_variance_portfolio(((0.0004, 0.0002), (0.0002, 0.0001)))
 
-    def test_indefinite_covariance_is_rejected_by_the_closed_form(self) -> None:
-        # det < 0 and 1'Sigma^-1 1 < 0: not a covariance matrix.
-        with self.assertRaisesRegex(ValueError, "not positive definite"):
+    def test_indefinite_covariance_is_rejected_at_entry(self) -> None:
+        # Eigenvalues -6.57e-5 and 1.07e-3: not a covariance matrix.
+        # Formerly this reached the closed form and failed only at the
+        # 1'Sigma^-1 1 > 0 guard; the eigenvalue validation now rejects
+        # it before any solve, naming the offending eigenvalue.
+        with self.assertRaisesRegex(ValueError, "not positive semidefinite.*smallest eigenvalue"):
             minimum_variance_portfolio(((0.0001, 0.0004), (0.0004, 0.0009)))
 
-    def test_indefinite_covariance_is_caught_at_the_variance(self) -> None:
-        # This indefinite matrix passes the entry checks but produces a
-        # negative "variance" near the 0.064 target; the frontier
-        # refuses to report its square root.
+    def test_the_frontier_rejects_an_indefinite_covariance_at_entry(self) -> None:
+        # The same eigenvalues with the off-diagonal sign flipped.
+        # Formerly this survived until a portfolio variance came out
+        # negative near the 0.064 target; it is now rejected before the
+        # solver ever sees it. The variance guard stays in the code as
+        # defense in depth.
         bad = ((0.0001, -0.0004), (-0.0004, 0.0009))
-        with self.assertRaisesRegex(ValueError, "not positive semidefinite"):
+        with self.assertRaisesRegex(ValueError, "not positive semidefinite.*smallest eigenvalue"):
             efficient_frontier(MU, bad, (0.064,))
 
     def test_expected_returns_must_match_the_matrix(self) -> None:
@@ -274,6 +285,61 @@ class ValidationTests(unittest.TestCase):
         shorter = PriceSeries("BBB", DATES[:4], SERIES_B.prices[:4])
         with self.assertRaisesRegex(ValueError, "not on the same date grid"):
             annualized_mean_returns((SERIES_A, shorter))
+
+
+# Two equal-variance assets at correlation rho have eigenvalues
+# v(1 - rho) and v(1 + rho), so cond2 = (1 + rho) / (1 - rho): 2e9 at
+# rho = 1 - 1e-9 (warn band) and 2e13 at rho = 1 - 1e-13 (refuse band).
+NEAR_SINGULAR = (
+    (0.0004, 0.0004 * (1.0 - 1e-9)),
+    (0.0004 * (1.0 - 1e-9), 0.0004),
+)
+BEYOND_REFUSAL = (
+    (0.0004, 0.0004 * (1.0 - 1e-13)),
+    (0.0004 * (1.0 - 1e-13), 0.0004),
+)
+
+
+class ConditioningTests(unittest.TestCase):
+    def test_a_well_conditioned_frontier_point_carries_its_condition_number(self) -> None:
+        # SIGMA's eigenvalues are (13 +/- sqrt(29))e-4 / 2, so cond2 is
+        # (13 + sqrt(29)) / (13 - sqrt(29)) = (99 + 13 sqrt(29)) / 70.
+        (point,) = efficient_frontier(MU, SIGMA, (0.08,))
+        expected = (99.0 + 13.0 * math.sqrt(29.0)) / 70.0
+        self.assertAlmostEqual(point.condition_number, expected, places=12)
+        self.assertIsNone(point.conditioning_warning)
+
+    def test_every_point_of_one_frontier_shares_the_diagnosis(self) -> None:
+        targets = (0.055, 0.07, 0.095)
+        points = efficient_frontier(MU, SIGMA, targets)
+        for point in points:
+            self.assertEqual(point.condition_number, points[0].condition_number)
+            self.assertIsNone(point.conditioning_warning)
+
+    def test_a_near_singular_covariance_warns_but_proceeds(self) -> None:
+        # cond2 = 2e9 sits above the warn limit and below the refuse
+        # limit: the solve proceeds — equal variances pin the
+        # minimum-variance weights at (0.5, 0.5) — and the warning is
+        # carried on the result instead of being printed or dropped.
+        # The loose tolerance is the warning made visible: at cond2
+        # = 2e9 the solve really does return 0.5 only to ~8 digits.
+        weights = minimum_variance_portfolio(NEAR_SINGULAR)
+        self.assertAlmostEqual(weights[0], 0.5, places=6)
+        self.assertAlmostEqual(weights[1], 0.5, places=6)
+        (point,) = efficient_frontier(MU, NEAR_SINGULAR, (0.08,))
+        self.assertGreater(point.condition_number, CONDITION_NUMBER_WARN_LIMIT)
+        self.assertLess(point.condition_number, CONDITION_NUMBER_REFUSE_LIMIT)
+        self.assertIsNotNone(point.conditioning_warning)
+        self.assertIn("condition number", point.conditioning_warning or "")
+
+    def test_an_extreme_condition_number_is_refused(self) -> None:
+        # cond2 = 2e13 exceeds the refuse limit: solving would amplify
+        # relative input noise by thirteen orders of magnitude, so both
+        # entry points refuse instead of returning noise as weights.
+        with self.assertRaisesRegex(ValueError, "condition number"):
+            minimum_variance_portfolio(BEYOND_REFUSAL)
+        with self.assertRaisesRegex(ValueError, "condition number"):
+            efficient_frontier(MU, BEYOND_REFUSAL, (0.08,))
 
 
 if __name__ == "__main__":  # pragma: no cover

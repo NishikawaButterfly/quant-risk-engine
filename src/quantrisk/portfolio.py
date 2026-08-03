@@ -21,6 +21,14 @@ exact for a single period and equivalent to rebalancing back to the
 target weights every day. Buy-and-hold weights would drift with prices
 instead; over long horizons the two diverge, and this module makes no
 attempt to model that drift.
+
+This module also owns the engine's single covariance validation path,
+:func:`validate_covariance`: every consumer of a covariance matrix —
+the portfolio methods here and the frontier solvers — runs its input
+through it, so an asymmetric or indefinite matrix is rejected at entry
+with the offending eigenvalue named, and the matrix's 2-norm condition
+number is computed once (from the same eigendecomposition) and carried
+on results instead of being silently ignored.
 """
 
 from __future__ import annotations
@@ -39,6 +47,35 @@ from quantrisk.series import MIN_ALIGN_SERIES, PriceSeries
 #: float rounding (for example thirds) but still rejects a forgotten
 #: leg or weights quoted in percent.
 WEIGHT_SUM_TOLERANCE = 1e-9
+
+#: A covariance matrix must equal its transpose within this absolute
+#: tolerance. Matrices from :func:`covariance_matrix` are exactly
+#: symmetric; the tolerance only absorbs rounding in matrices the
+#: caller assembled elsewhere.
+SYMMETRY_TOLERANCE = 1e-12
+
+#: Relative eigenvalue floor for the positive-semidefiniteness check:
+#: the smallest eigenvalue must satisfy
+#: ``min_eig >= -PSD_TOLERANCE * max(1.0, max_eig)``. A true covariance
+#: matrix is PSD by construction, but the *computed* sample covariance
+#: of near-collinear return series can carry an eigenvalue a hair below
+#: zero from floating-point rounding alone; the floor accepts that
+#: noise while still rejecting genuinely indefinite matrices, which no
+#: return data can produce.
+PSD_TOLERANCE = 1e-10
+
+#: Above this 2-norm condition number a covariance is disclosed as
+#: ill-conditioned: results computed from it carry a
+#: ``conditioning_warning`` (and the CLI report surfaces it under
+#: Caveats) but the computation proceeds.
+CONDITION_NUMBER_WARN_LIMIT = 1e8
+
+#: Above this 2-norm condition number the solve-based consumers (the
+#: frontier functions, which pass the matrix through a linear solve)
+#: refuse outright: a solve against such a matrix amplifies relative
+#: input noise by the condition number, so the "weights" it would
+#: return are noise presented as precision.
+CONDITION_NUMBER_REFUSE_LIMIT = 1e12
 
 
 def _validate_aligned(series: Sequence[PriceSeries]) -> tuple[PriceSeries, ...]:
@@ -60,6 +97,113 @@ def _validate_aligned(series: Sequence[PriceSeries]) -> tuple[PriceSeries, ...]:
 
 def _returns_matrix(items: tuple[PriceSeries, ...]) -> npt.NDArray[np.float64]:
     return np.array([item.simple_returns() for item in items], dtype=np.float64)
+
+
+def _require_number(value: float, description: str) -> float:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ValueError(f"{description} is not a number")
+    if not math.isfinite(value):
+        raise ValueError(f"{description} is {value!r}; it must be finite")
+    return float(value)
+
+
+@dataclass(frozen=True, slots=True)
+class CovarianceDiagnostics:
+    """What one eigendecomposition of a covariance matrix reveals.
+
+    ``smallest_eigenvalue`` and ``largest_eigenvalue`` come from
+    :func:`numpy.linalg.eigvalsh`. ``condition_number`` is the 2-norm
+    condition number — for a symmetric matrix, the largest eigenvalue
+    magnitude over the smallest, and :data:`math.inf` for an exactly
+    singular matrix. ``conditioning_warning`` is a human-readable
+    disclosure carried whenever the condition number exceeds
+    :data:`CONDITION_NUMBER_WARN_LIMIT`, and ``None`` otherwise.
+    """
+
+    smallest_eigenvalue: float
+    largest_eigenvalue: float
+    condition_number: float
+    conditioning_warning: str | None
+
+
+def validate_covariance(
+    covariance: Sequence[Sequence[float]], *, tolerance: float = PSD_TOLERANCE
+) -> CovarianceDiagnostics:
+    """The single validation path for every covariance-matrix consumer.
+
+    Checks that the matrix is square with at least two assets, that
+    every entry is a finite number, that no variance is negative, that
+    it is symmetric within :data:`SYMMETRY_TOLERANCE`, and — via one
+    :func:`numpy.linalg.eigvalsh` decomposition — that it is positive
+    semidefinite within the relative floor
+    ``min_eig >= -tolerance * max(1.0, max_eig)``. An indefinite matrix
+    is rejected with the offending eigenvalue named. The same
+    decomposition yields the 2-norm condition number, so nothing is
+    decomposed twice.
+
+    The tolerance exists because the floating-point sample covariance
+    of near-collinear return series can carry a tiny negative
+    eigenvalue that is pure rounding noise on a matrix that is PSD by
+    construction; rejecting it would reject legitimate data. Passing
+    the floor never hides near-singularity: such a matrix reports a
+    huge (or infinite) condition number and carries a
+    ``conditioning_warning``. This function itself never refuses on
+    conditioning — quadratic forms like ``w'Sw`` do not invert the
+    matrix — but the solve-based frontier consumers refuse above
+    :data:`CONDITION_NUMBER_REFUSE_LIMIT`.
+    """
+
+    rows = tuple(tuple(row) for row in covariance)
+    size = len(rows)
+    if size < MIN_ALIGN_SERIES:
+        raise ValueError("a covariance matrix needs at least two assets")
+    for index, row in enumerate(rows):
+        if len(row) != size:
+            raise ValueError(
+                f"covariance matrix must be square; row {index} has {len(row)} entries, "
+                f"expected {size}"
+            )
+        for column, value in enumerate(row):
+            _require_number(value, f"covariance entry [{index}][{column}]")
+    for index in range(size):
+        if rows[index][index] < 0.0:
+            raise ValueError(
+                f"covariance entry [{index}][{index}] is negative; variances cannot be"
+            )
+        for column in range(index):
+            if abs(rows[index][column] - rows[column][index]) > SYMMETRY_TOLERANCE:
+                raise ValueError(
+                    f"covariance matrix is not symmetric at [{index}][{column}] "
+                    f"within {SYMMETRY_TOLERANCE}"
+                )
+    eigenvalues = np.linalg.eigvalsh(np.array(rows, dtype=np.float64))
+    smallest = float(eigenvalues[0])
+    largest = float(eigenvalues[-1])
+    floor = tolerance * max(1.0, largest)
+    if smallest < -floor:
+        raise ValueError(
+            "covariance matrix is not positive semidefinite: its smallest eigenvalue "
+            f"{smallest!r} is below the tolerance floor {-floor!r}"
+        )
+    magnitudes = np.abs(eigenvalues)
+    smallest_magnitude = float(magnitudes.min())
+    condition_number = (
+        math.inf if smallest_magnitude == 0.0 else float(magnitudes.max()) / smallest_magnitude
+    )
+    conditioning_warning = None
+    if condition_number > CONDITION_NUMBER_WARN_LIMIT:
+        conditioning_warning = (
+            "covariance matrix is ill-conditioned: its 2-norm condition number "
+            f"{condition_number:.3e} exceeds {CONDITION_NUMBER_WARN_LIMIT:.0e}; "
+            "weight-space results computed from it can amplify relative input "
+            "noise by that factor"
+        )
+    return CovarianceDiagnostics(
+        smallest_eigenvalue=smallest,
+        largest_eigenvalue=largest,
+        condition_number=condition_number,
+        conditioning_warning=conditioning_warning,
+    )
 
 
 def covariance_matrix(series: Sequence[PriceSeries]) -> tuple[tuple[float, ...], ...]:
@@ -165,8 +309,29 @@ class Portfolio:
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         ordered = self._ordered(series)
         weights = np.array(self.weights, dtype=np.float64)
-        matrix = np.asarray(covariance_matrix(ordered))
-        return weights, matrix
+        rows = covariance_matrix(ordered)
+        # Entry validation: an asymmetric or indefinite matrix is
+        # rejected here, before any quadratic form runs. Conditioning
+        # never blocks these methods — w'Sw and Sw involve no inverse —
+        # and is disclosed through covariance_diagnostics() instead.
+        validate_covariance(rows)
+        return weights, np.asarray(rows)
+
+    def covariance_diagnostics(self, series: Sequence[PriceSeries]) -> CovarianceDiagnostics:
+        """Validate and diagnose this portfolio's covariance matrix.
+
+        The eigenvalue extremes, the 2-norm condition number, and — when
+        the condition number exceeds
+        :data:`CONDITION_NUMBER_WARN_LIMIT` — a human-readable
+        ``conditioning_warning``. This is the portfolio's conditioning
+        surface: the report layer carries these figures into
+        ``results.json`` and the report's Caveats. It never refuses on
+        conditioning, because the portfolio methods only ever compute
+        quadratic forms; the frontier's solve paths are the ones that
+        refuse beyond :data:`CONDITION_NUMBER_REFUSE_LIMIT`.
+        """
+
+        return validate_covariance(covariance_matrix(self._ordered(series)))
 
     def return_series(self, series: Sequence[PriceSeries]) -> tuple[float, ...]:
         """Daily portfolio simple returns: the weighted sum of asset returns.

@@ -34,7 +34,13 @@ from quantrisk.montecarlo import (
     run_bootstrap,
     run_parametric_normal,
 )
-from quantrisk.portfolio import Portfolio, correlation_matrix, covariance_matrix
+from quantrisk.portfolio import (
+    CovarianceDiagnostics,
+    Portfolio,
+    correlation_matrix,
+    covariance_matrix,
+    validate_covariance,
+)
 from quantrisk.series import PriceSeries, align
 from quantrisk.stress import (
     ShockStressResult,
@@ -49,6 +55,7 @@ __version__ = "0.1.0"
 __all__ = [
     "BacktestResult",
     "BenchmarkComparison",
+    "CovarianceDiagnostics",
     "Drawdown",
     "FrontierPoint",
     "MonteCarloResult",
@@ -80,4 +87,5 @@ __all__ = [
     "sharpe_ratio",
     "shock_stress",
     "sortino_ratio",
+    "validate_covariance",
 ]

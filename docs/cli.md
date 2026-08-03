@@ -67,11 +67,17 @@ directory:
   metrics with risk contributions, the benchmark comparison, the
   stress results, and the Monte Carlo summary with its seed, run
   count, and the full sorted terminal values, so any summary figure
-  can be recomputed and checked.
+  can be recomputed and checked. The portfolio metrics include the
+  covariance matrix's 2-norm `condition_number` (`null` when it is
+  infinite) and a `conditioning_warning` that is `null` unless the
+  matrix is ill-conditioned — see the numerical-conditioning section
+  of [methodology.md](methodology.md).
 - `report.md` — a short committee-style report: the holdings and
   conventions, the per-asset table, portfolio risk with
   contributions, the benchmark table, the stress tables, the Monte
-  Carlo percentiles with the seed stated, and the caveats.
+  Carlo percentiles with the seed stated, and the caveats. When the
+  covariance is ill-conditioned, the conditioning warning appears
+  under Caveats.
 
 Both artifacts render from one evaluation, so they cannot disagree,
 and neither embeds a timestamp: the same spec always produces
