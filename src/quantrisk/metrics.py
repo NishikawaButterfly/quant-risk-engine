@@ -6,6 +6,11 @@ the metric needs the price path itself. The conventions — annualization
 factor, denominators, percentile method, sign of a VaR — are stated in
 ``docs/methodology.md`` next to a hand-worked example whose digits the
 test suite asserts.
+
+Every number entering a metric — each return, the risk-free rate, the
+Sortino target, the confidence level — passes the engine's shared
+validation path (:mod:`quantrisk._validation`): booleans and
+non-finite values are rejected with the offending parameter named.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from dataclasses import dataclass
 
 from scipy.stats import norm
 
+from quantrisk._validation import require_finite_number, require_finite_numbers
 from quantrisk.series import PriceSeries
 
 #: Annualization convention: 252 trading days per year. Volatility
@@ -30,15 +36,14 @@ def _validate_returns(returns: Sequence[float]) -> tuple[float, ...]:
     values = tuple(returns)
     if len(values) < MIN_RETURNS:
         raise ValueError(f"need at least {MIN_RETURNS} returns, got {len(values)}")
-    for value in values:
-        if not math.isfinite(value):
-            raise ValueError(f"returns must be finite, got {value!r}")
-    return values
+    return require_finite_numbers(values, "return")
 
 
-def _validate_confidence(confidence: float) -> None:
-    if not 0.0 < confidence < 1.0:
-        raise ValueError(f"confidence must lie strictly between 0 and 1, got {confidence}")
+def _validate_confidence(confidence: float) -> float:
+    value = require_finite_number(confidence, "confidence")
+    if not 0.0 < value < 1.0:
+        raise ValueError(f"confidence must lie strictly between 0 and 1, got {value}")
+    return value
 
 
 def _mean(values: tuple[float, ...]) -> float:
@@ -69,10 +74,11 @@ def sharpe_ratio(returns: Sequence[float], risk_free_rate_annual: float) -> floa
     """
 
     values = _validate_returns(returns)
+    rate = require_finite_number(risk_free_rate_annual, "risk_free_rate_annual")
     stddev = _sample_stddev(values)
     if stddev == 0:
         raise ValueError("Sharpe ratio is undefined for constant returns")
-    risk_free_periodic = risk_free_rate_annual / TRADING_DAYS_PER_YEAR
+    risk_free_periodic = rate / TRADING_DAYS_PER_YEAR
     excess = _mean(values) - risk_free_periodic
     return excess / stddev * math.sqrt(TRADING_DAYS_PER_YEAR)
 
@@ -88,11 +94,12 @@ def sortino_ratio(returns: Sequence[float], target_return_periodic: float = 0.0)
     """
 
     values = _validate_returns(returns)
-    shortfalls = tuple(min(value - target_return_periodic, 0.0) for value in values)
+    target = require_finite_number(target_return_periodic, "target_return_periodic")
+    shortfalls = tuple(min(value - target, 0.0) for value in values)
     downside = math.sqrt(sum(shortfall**2 for shortfall in shortfalls) / len(values))
     if downside == 0:
         raise ValueError("Sortino ratio is undefined when no return falls below the target")
-    excess = _mean(values) - target_return_periodic
+    excess = _mean(values) - target
     return excess / downside * math.sqrt(TRADING_DAYS_PER_YEAR)
 
 
@@ -159,8 +166,8 @@ def historical_var(returns: Sequence[float], confidence: float) -> float:
     """
 
     values = _validate_returns(returns)
-    _validate_confidence(confidence)
-    return -_interpolated_percentile(tuple(sorted(values)), 1.0 - confidence)
+    level = _validate_confidence(confidence)
+    return -_interpolated_percentile(tuple(sorted(values)), 1.0 - level)
 
 
 def historical_cvar(returns: Sequence[float], confidence: float) -> float:
@@ -173,8 +180,8 @@ def historical_cvar(returns: Sequence[float], confidence: float) -> float:
     """
 
     values = _validate_returns(returns)
-    _validate_confidence(confidence)
-    threshold = _interpolated_percentile(tuple(sorted(values)), 1.0 - confidence)
+    level = _validate_confidence(confidence)
+    threshold = _interpolated_percentile(tuple(sorted(values)), 1.0 - level)
     tail = [value for value in values if value <= threshold]
     return -sum(tail) / len(tail)
 
@@ -190,6 +197,6 @@ def parametric_var(returns: Sequence[float], confidence: float) -> float:
     """
 
     values = _validate_returns(returns)
-    _validate_confidence(confidence)
-    z_score = float(norm.ppf(1.0 - confidence))
+    level = _validate_confidence(confidence)
+    z_score = float(norm.ppf(1.0 - level))
     return -(_mean(values) + z_score * _sample_stddev(values))

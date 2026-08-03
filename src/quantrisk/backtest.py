@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import Protocol
 
+from quantrisk._validation import require_finite_number, require_finite_numbers
 from quantrisk.metrics import (
     TRADING_DAYS_PER_YEAR,
     Drawdown,
@@ -69,7 +70,10 @@ class PolicyWindow:
 
     ``prices[i]`` is the price history of ``names[i]`` on ``dates``,
     taken verbatim from series already validated by
-    :class:`~quantrisk.series.PriceSeries`.
+    :class:`~quantrisk.series.PriceSeries`. A directly constructed
+    window is re-checked all the same: every price must be a finite
+    number (booleans rejected), through the engine's shared
+    validation path.
     """
 
     decision_date: str
@@ -102,6 +106,7 @@ class PolicyWindow:
                     f"window prices for {name!r} have {len(row)} entries "
                     f"for {len(self.dates)} dates"
                 )
+            require_finite_numbers(row, f"window price for {name!r}")
 
     def __len__(self) -> int:
         """The number of observed days, all strictly before the decision date."""
@@ -185,14 +190,6 @@ class BacktestResult:
     total_costs: float
 
 
-def _require_number(value: float, description: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ValueError(f"{description} is not a number")
-    if not math.isfinite(value):
-        raise ValueError(f"{description} is {value!r}; it must be finite")
-    return float(value)
-
-
 def _require_int(value: int, description: str, *, minimum: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{description} must be an integer, got {value!r}")
@@ -228,17 +225,13 @@ def _validate_target_weights(weights: Sequence[float], count: int) -> tuple[floa
     values = tuple(weights)
     if len(values) != count:
         raise ValueError(f"policy returned {len(values)} weights for {count} assets")
-    for index, value in enumerate(values):
-        if not isinstance(value, int | float) or isinstance(value, bool):
-            raise ValueError(f"policy weight [{index}] is not a number")
-        if not math.isfinite(value):
-            raise ValueError(f"policy weight [{index}] is {value!r}; weights must be finite")
-    total = math.fsum(values)
+    converted = require_finite_numbers(values, "policy weight")
+    total = math.fsum(converted)
     if abs(total - 1.0) > WEIGHT_SUM_TOLERANCE:
         raise ValueError(
             f"policy weights sum to {total!r}; they must sum to 1 within {WEIGHT_SUM_TOLERANCE}"
         )
-    return tuple(float(value) for value in values)
+    return converted
 
 
 def run_backtest(
@@ -274,10 +267,10 @@ def run_backtest(
     items = _validate_backtest_series(aligned_series)
     _require_int(schedule, "schedule", minimum=1)
     min_history = _require_int(policy.min_history_days, "policy min_history_days", minimum=1)
-    rate = _require_number(cost_rate, "cost_rate")
+    rate = require_finite_number(cost_rate, "cost_rate")
     if not 0.0 <= rate < 1.0:
         raise ValueError(f"cost_rate must lie in [0, 1), got {cost_rate}")
-    value = _require_number(initial_value, "initial_value")
+    value = require_finite_number(initial_value, "initial_value")
     if value <= 0.0:
         raise ValueError(f"initial_value must be positive, got {initial_value}")
     grid = items[0].dates

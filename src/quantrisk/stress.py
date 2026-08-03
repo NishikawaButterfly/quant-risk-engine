@@ -34,6 +34,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from quantrisk._validation import require_finite_number
 from quantrisk.metrics import Drawdown, annualized_volatility, max_drawdown
 from quantrisk.portfolio import Portfolio
 from quantrisk.series import PriceSeries, _parse_iso_date
@@ -195,18 +196,14 @@ def _validate_shock_vector(
         raise ValueError(f"shock {name!r} names {unknown}, which the portfolio does not hold")
     ordered = []
     for asset in portfolio.names:
-        value = shocks[asset]
-        if not isinstance(value, int | float) or isinstance(value, bool):
-            raise ValueError(f"shock {name!r} value for {asset!r} is not a number")
-        if not math.isfinite(value):
-            raise ValueError(f"shock {name!r} value for {asset!r} is {value!r}; not finite")
+        value = require_finite_number(shocks[asset], f"shock {name!r} value for {asset!r}")
         if value <= -1.0:
             raise ValueError(
                 f"shock {name!r} value for {asset!r} is {value!r}; a simple-return "
                 "shock must exceed -1, because a positive price cannot lose more "
                 "than everything"
             )
-        ordered.append(float(value))
+        ordered.append(value)
     return tuple(ordered)
 
 

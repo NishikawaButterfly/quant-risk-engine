@@ -49,6 +49,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from quantrisk._validation import require_finite_number, require_finite_numbers
 from quantrisk.metrics import TRADING_DAYS_PER_YEAR, _mean, _sample_stddev
 
 #: A comparison needs at least three paired observations: a straight
@@ -94,11 +95,10 @@ def _validate_pair(
         raise ValueError(
             f"need at least {MIN_COMPARISON_RETURNS} paired returns, got {len(portfolio)}"
         )
-    for label, values in (("portfolio", portfolio), ("benchmark", benchmark)):
-        for value in values:
-            if not math.isfinite(value):
-                raise ValueError(f"{label} returns must be finite, got {value!r}")
-    return portfolio, benchmark
+    return (
+        require_finite_numbers(portfolio, "portfolio return"),
+        require_finite_numbers(benchmark, "benchmark return"),
+    )
 
 
 def _sample_covariance(first: tuple[float, ...], second: tuple[float, ...]) -> float:
@@ -151,11 +151,7 @@ def compare_to_benchmark(
     """
 
     portfolio, benchmark = _validate_pair(portfolio_returns, benchmark_returns)
-    if not isinstance(risk_free_rate_daily, int | float) or isinstance(risk_free_rate_daily, bool):
-        raise ValueError("risk_free_rate_daily is not a number")
-    if not math.isfinite(risk_free_rate_daily):
-        raise ValueError(f"risk_free_rate_daily is {risk_free_rate_daily!r}; it must be finite")
-    rate = float(risk_free_rate_daily)
+    rate = require_finite_number(risk_free_rate_daily, "risk_free_rate_daily")
 
     benchmark_variance = _sample_covariance(benchmark, benchmark)
     if benchmark_variance == 0.0:

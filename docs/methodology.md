@@ -19,6 +19,22 @@ Metrics over returns take periodic (daily) returns; the annualization
 convention is 252 trading days per year. Mean returns scale linearly
 with time and volatilities with its square root.
 
+### Input contract for numbers
+
+Every number crossing a public boundary — prices, weights, rates,
+shocks, confidence levels, expected and target returns, spec fields —
+passes one shared validation path (`quantrisk._validation`). The value
+must be a real number in the `numbers.Real` sense, must not be a
+`bool`, and must be finite; failures name the offending parameter (and
+its index, inside a sequence). `bool` is rejected explicitly because
+Python's `bool` subclasses `int`, so `True` would otherwise compute
+silently as 1.0. The `numbers.Real` rule means NumPy scalars pass —
+`np.float64` (a `float` subclass) and `np.int64` (not an `int`
+subclass) alike — and are normalized to built-in floats on entry.
+JSON specs are stricter still: `true`/`false` never count as numbers,
+and the non-standard `NaN`/`Infinity`/`-Infinity` tokens are refused
+when the document is parsed.
+
 ## Returns
 
 Simple and log returns of a price series `p`:
