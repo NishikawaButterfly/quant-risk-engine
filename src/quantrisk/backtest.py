@@ -1,16 +1,19 @@
 """Look-ahead-safe walk-forward backtesting of weight policies.
 
-The design's core claim: a policy cannot peek, because there is
-nothing to peek at. At each rebalance the engine hands the policy a
-:class:`PolicyWindow` built by *slicing* the aligned data at the
-decision date — the object physically contains the dates and prices
-strictly before that date and nothing else. Look-ahead is not a rule
-the policy is trusted to follow: the data on or after the decision
-date is absent from the only object the policy receives, so a peek is
-inexpressible and raises instead of returning a number. The window
-re-checks the invariant on construction, and the test suite asserts,
-for every rebalance of a run, that each window ends exactly one
-trading day before its decision date.
+The design's core claim: the policy interface exposes only
+observations strictly preceding the decision date. At each rebalance
+the engine hands the policy a :class:`PolicyWindow` built by
+*slicing* the aligned data at the decision date — the object
+physically contains the dates and prices strictly before that date
+and nothing else, so a policy that works from its window alone has no
+future data to read, and indexing past the window's end raises
+instead of returning a number. The window re-checks the invariant on
+construction, and the test suite asserts, for every rebalance of a
+run, that each window ends exactly one trading day before its
+decision date. The boundary stops at the interface: a Python callable
+can still reach future data through closures, external state, files,
+or APIs, so caller-supplied policies remain responsible for not
+accessing future data through anything outside their window.
 
 Between rebalances the portfolio is buy-and-hold: weights drift with
 prices. This is deliberately the opposite convention from
@@ -57,9 +60,12 @@ class PolicyWindow:
     decision date, so the object holds the dates and prices strictly
     before ``decision_date`` and physically nothing else — no field,
     method, or index reaches data on or after it. That absence is the
-    look-ahead guarantee: peeking is not forbidden, it is
-    inexpressible. Construction re-checks the invariant and rejects
-    any history that touches or passes its own decision date.
+    look-ahead boundary: the window exposes only observations strictly
+    preceding the decision date, and a policy that reads anything else
+    — closures, external state, files, APIs — is reaching around the
+    interface, which remains the caller's responsibility to avoid.
+    Construction re-checks the invariant and rejects any history that
+    touches or passes its own decision date.
 
     ``prices[i]`` is the price history of ``names[i]`` on ``dates``,
     taken verbatim from series already validated by
@@ -252,9 +258,11 @@ def run_backtest(
     before the first decision are held in cash, which earns exactly
     zero in this version. Between decisions the portfolio is
     buy-and-hold — weights drift with prices — and at each decision
-    the policy sees only a :class:`PolicyWindow` sliced strictly
-    before the decision date, so peeking is impossible by
-    construction. Every rebalance, including the first out of cash, is
+    the policy is handed a :class:`PolicyWindow` sliced strictly
+    before the decision date; the interface exposes nothing later, and
+    caller-supplied policies remain responsible for not reaching
+    future data through external state or external data sources.
+    Every rebalance, including the first out of cash, is
     charged ``cost_rate * turnover * pre-trade value`` with turnover
     ``sum |target - drifted|``.
 

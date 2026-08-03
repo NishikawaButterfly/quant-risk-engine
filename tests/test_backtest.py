@@ -83,8 +83,10 @@ class PeekingMomentum:
 
     It locates the decision date in the full grid — data the window
     does not carry — and goes all-in on the asset with the best
-    *forward* growth over the coming holding period. The real policy
-    interface cannot express this: see LookAheadTests.
+    *forward* growth over the coming holding period. It reaches
+    around the interface through state its caller supplied — exactly
+    what the window withholds and honest policies must not do: see
+    LookAheadTests.
     """
 
     min_history_days = 2
@@ -239,7 +241,7 @@ class LookAheadTests(unittest.TestCase):
                     row[today + 1]
 
     def test_windows_that_touch_their_decision_date_cannot_be_constructed(self) -> None:
-        # The constructive half of the guarantee: a window whose history
+        # The constructive half of the boundary: a window whose history
         # reaches its own decision date is rejected outright.
         for decision in ("2026-01-06", "2026-01-05", "2026-01-02"):
             with self.assertRaisesRegex(ValueError, "strictly before"):
