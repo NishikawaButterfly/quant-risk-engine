@@ -22,6 +22,9 @@ dev = [
   "ruff==0.16.0",
 ]
 
+[project.scripts]
+quantrisk = "quantrisk.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/NishikawaButterfly/quant-risk-engine"
 Issues = "https://github.com/NishikawaButterfly/quant-risk-engine/issues"
