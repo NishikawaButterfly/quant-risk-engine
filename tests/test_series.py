@@ -45,8 +45,11 @@ class PriceSeriesValidationTests(unittest.TestCase):
             PriceSeries("AAA", ("2026-01-05", "2026-01-05", "2026-01-07"), (1.0, 2.0, 3.0))
 
     def test_nonpositive_and_nonfinite_prices_are_rejected(self) -> None:
-        for bad in (0.0, -1.0, math.nan, math.inf, -math.inf):
-            with self.assertRaisesRegex(ValueError, "finite and positive"):
+        for bad in (math.nan, math.inf, -math.inf):
+            with self.assertRaisesRegex(ValueError, "must be finite"):
+                PriceSeries("AAA", DATES[:3], (100.0, bad, 101.0))
+        for bad in (0.0, -1.0):
+            with self.assertRaisesRegex(ValueError, "must be positive"):
                 PriceSeries("AAA", DATES[:3], (100.0, bad, 101.0))
 
     def test_boolean_prices_are_rejected(self) -> None:

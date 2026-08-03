@@ -7,6 +7,11 @@ Carlo block with its mandatory seed. Loading is bounded and strict —
 both files have size caps, duplicate JSON keys, unknown keys, and
 wrong types are rejected with the offending field named, and a spec
 either loads completely or not at all; no partial objects escape.
+Numbers are strict too: JSON ``true``/``false`` never count as
+numbers, and the non-standard ``NaN``/``Infinity``/``-Infinity``
+tokens (which Python's :mod:`json` would otherwise happily parse into
+floats) are refused at parse, so no non-finite value can enter through
+a spec.
 
 The prices CSV path must be relative and resolve inside the spec's own
 directory. A spec that could read files elsewhere on the machine is a
@@ -29,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from quantrisk._validation import require_finite_number
 from quantrisk.montecarlo import (
     MAX_HORIZON_DAYS,
     MAX_RUNS,
@@ -100,6 +106,17 @@ class RunSpec:
     monte_carlo: MonteCarloSpec | None
 
 
+def _reject_nonfinite_token(token: str) -> Any:
+    """Refuse the non-standard JSON tokens ``NaN`` and ``±Infinity``.
+
+    Python's :func:`json.loads` parses them into floats by default;
+    a spec carrying one describes no finite number, so the document is
+    rejected at parse rather than validated field by field later.
+    """
+
+    raise SpecFileError(f"spec JSON contains {token}; every number in a spec must be finite")
+
+
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -149,7 +166,13 @@ def _number(mapping: dict[str, Any], path: str, key: str) -> float:
     value = mapping[key]
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise SpecFileError(f"{path}.{key} must be a JSON number")
-    return float(value)
+    # Defense in depth: the parse hook already refuses the tokens that
+    # produce non-finite floats, so this shared check should never
+    # fire from load_spec; it stays so the field rule holds on its own.
+    try:
+        return require_finite_number(value, f"{path}.{key}")
+    except ValueError as exc:
+        raise SpecFileError(str(exc)) from exc
 
 
 def _integer(mapping: dict[str, Any], path: str, key: str) -> int:
@@ -361,6 +384,7 @@ def load_spec(path: str | Path) -> RunSpec:
         payload = json.loads(
             _read_bounded_text(spec_path, _MAX_SPEC_BYTES),
             object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_nonfinite_token,
         )
     except json.JSONDecodeError as exc:
         raise SpecFileError(f"invalid spec JSON: {exc}") from exc

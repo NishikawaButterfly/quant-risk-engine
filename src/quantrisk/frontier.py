@@ -52,11 +52,11 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize
 
+from quantrisk._validation import require_finite_numbers
 from quantrisk.metrics import TRADING_DAYS_PER_YEAR
 from quantrisk.portfolio import (
     CONDITION_NUMBER_REFUSE_LIMIT,
     CovarianceDiagnostics,
-    _require_number,
     _validate_aligned,
     validate_covariance,
 )
@@ -126,9 +126,7 @@ def _validate_expected_returns(
         raise ValueError(
             f"got {len(values)} expected returns for a {size}-asset covariance matrix"
         )
-    for index, value in enumerate(values):
-        _require_number(value, f"expected return [{index}]")
-    return np.array(values, dtype=np.float64)
+    return np.array(require_finite_numbers(values, "expected return"), dtype=np.float64)
 
 
 def _annualized_volatility(
@@ -333,10 +331,7 @@ def efficient_frontier(
 
     matrix, diagnostics = _solvable_covariance(covariance)
     mu = _validate_expected_returns(expected_returns, len(matrix))
-    targets = tuple(
-        _require_number(value, f"target return [{index}]")
-        for index, value in enumerate(target_returns)
-    )
+    targets = require_finite_numbers(tuple(target_returns), "target return")
     if not targets:
         raise ValueError("need at least one target return")
     _check_targets_reachable(targets, mu, long_only=long_only)

@@ -40,6 +40,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+from quantrisk._validation import require_finite_number
 from quantrisk.metrics import TRADING_DAYS_PER_YEAR
 from quantrisk.series import MIN_ALIGN_SERIES, PriceSeries
 
@@ -99,12 +100,9 @@ def _returns_matrix(items: tuple[PriceSeries, ...]) -> npt.NDArray[np.float64]:
     return np.array([item.simple_returns() for item in items], dtype=np.float64)
 
 
-def _require_number(value: float, description: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ValueError(f"{description} is not a number")
-    if not math.isfinite(value):
-        raise ValueError(f"{description} is {value!r}; it must be finite")
-    return float(value)
+# Backward-compatible alias: the number-validation path this module
+# introduced now lives in quantrisk._validation, shared engine-wide.
+_require_number = require_finite_number
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +162,7 @@ def validate_covariance(
                 f"expected {size}"
             )
         for column, value in enumerate(row):
-            _require_number(value, f"covariance entry [{index}][{column}]")
+            require_finite_number(value, f"covariance entry [{index}][{column}]")
     for index in range(size):
         if rows[index][index] < 0.0:
             raise ValueError(
@@ -269,10 +267,7 @@ class Portfolio:
             if not name or not name.strip():
                 raise ValueError("portfolio names must be nonempty strings")
         for name, weight in zip(self.names, self.weights, strict=True):
-            if not isinstance(weight, int | float) or isinstance(weight, bool):
-                raise ValueError(f"weight for {name!r} is not a number")
-            if not math.isfinite(weight):
-                raise ValueError(f"weight for {name!r} is {weight!r}; weights must be finite")
+            require_finite_number(weight, f"weight for {name!r}")
         total = math.fsum(self.weights)
         if abs(total - 1.0) > WEIGHT_SUM_TOLERANCE:
             raise ValueError(

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import date
 from itertools import pairwise
 
+from quantrisk._validation import require_finite_number
+
 #: A series must produce at least two returns, so a sample standard
 #: deviation (denominator n - 1) is defined. Two returns need three prices.
 MIN_PRICES = 3
@@ -68,12 +70,10 @@ class PriceSeries:
                     f"{current.isoformat()} follows {previous.isoformat()}"
                 )
         for text, price in zip(self.dates, self.prices, strict=True):
-            if not isinstance(price, int | float) or isinstance(price, bool):
-                raise ValueError(f"series {self.name!r} price on {text} is not a number")
-            if not math.isfinite(price) or price <= 0:
+            number = require_finite_number(price, f"series {self.name!r} price on {text}")
+            if number <= 0:
                 raise ValueError(
-                    f"series {self.name!r} price on {text} is {price!r}; "
-                    "prices must be finite and positive"
+                    f"series {self.name!r} price on {text} is {number!r}; prices must be positive"
                 )
 
     def __len__(self) -> int:

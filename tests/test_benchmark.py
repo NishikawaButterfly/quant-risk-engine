@@ -145,9 +145,9 @@ class ValidationTests(unittest.TestCase):
             compare_to_benchmark((0.01, 0.02), (0.01, 0.02))
 
     def test_nonfinite_returns_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "portfolio returns must be finite"):
+        with self.assertRaisesRegex(ValueError, r"portfolio return \[1\] is nan; it must be"):
             compare_to_benchmark((0.01, math.nan, 0.02), BENCHMARK[:3])
-        with self.assertRaisesRegex(ValueError, "benchmark returns must be finite"):
+        with self.assertRaisesRegex(ValueError, r"benchmark return \[1\] is inf; it must be"):
             compare_to_benchmark(PORTFOLIO[:3], (0.01, math.inf, 0.02))
 
     def test_a_constant_benchmark_is_rejected_for_beta(self) -> None:
