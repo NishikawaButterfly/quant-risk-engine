@@ -11,6 +11,7 @@ same spec always renders the same bytes.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -54,7 +55,13 @@ class AssetMetrics:
 
 @dataclass(frozen=True, slots=True)
 class PortfolioMetrics:
-    """The portfolio's own metrics plus its risk decomposition."""
+    """The portfolio's own metrics plus its risk decomposition.
+
+    ``condition_number`` is the covariance matrix's 2-norm condition
+    number (:data:`math.inf` for an exactly singular matrix) and
+    ``conditioning_warning`` its disclosure past the warn limit — see
+    :meth:`quantrisk.portfolio.Portfolio.covariance_diagnostics`.
+    """
 
     total_return: float
     annualized_volatility: float
@@ -64,6 +71,8 @@ class PortfolioMetrics:
     cvar_95: float
     diversification_benefit: float
     risk_contributions: dict[str, float]
+    condition_number: float
+    conditioning_warning: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +118,7 @@ def _portfolio_value_path(spec: RunSpec) -> PriceSeries:
 def _portfolio_metrics(spec: RunSpec) -> PortfolioMetrics:
     returns = spec.portfolio.return_series(spec.asset_series)
     path = _portfolio_value_path(spec)
+    diagnostics = spec.portfolio.covariance_diagnostics(spec.asset_series)
     return PortfolioMetrics(
         total_return=path.prices[-1] - 1.0,
         annualized_volatility=spec.portfolio.annualized_volatility(spec.asset_series),
@@ -118,6 +128,8 @@ def _portfolio_metrics(spec: RunSpec) -> PortfolioMetrics:
         cvar_95=historical_cvar(returns, VAR_CONFIDENCE),
         diversification_benefit=spec.portfolio.diversification_benefit(spec.asset_series),
         risk_contributions=spec.portfolio.risk_contributions(spec.asset_series),
+        condition_number=diagnostics.condition_number,
+        conditioning_warning=diagnostics.conditioning_warning,
     )
 
 
@@ -211,6 +223,14 @@ def results_payload(evaluation: SpecEvaluation) -> dict[str, Any]:
                 "cvar_95": evaluation.portfolio.cvar_95,
                 "diversification_benefit": evaluation.portfolio.diversification_benefit,
                 "risk_contributions": evaluation.portfolio.risk_contributions,
+                # JSON has no infinity; an exactly singular covariance
+                # reports null with its warning still stating the fact.
+                "condition_number": (
+                    evaluation.portfolio.condition_number
+                    if math.isfinite(evaluation.portfolio.condition_number)
+                    else None
+                ),
+                "conditioning_warning": evaluation.portfolio.conditioning_warning,
             },
         },
         "assets": {metrics.name: _metrics_dict(metrics) for metrics in evaluation.assets},
@@ -562,6 +582,13 @@ def render_report(evaluation: SpecEvaluation, source_name: str) -> str:
         "by a seeded script; results over it demonstrate the machinery, not any "
         "market."
     )
+    if evaluation.portfolio.conditioning_warning is not None:
+        lines.append(
+            f"- Numerical conditioning: {evaluation.portfolio.conditioning_warning}. "
+            "Near-collinear holdings make weight-space figures (risk "
+            "contributions above all) sensitive to tiny changes in the input "
+            "prices; treat them as indicative, not precise."
+        )
     lines.append("- Nothing in this report is investment advice.")
     lines.append("")
     return "\n".join(lines)

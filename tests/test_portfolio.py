@@ -5,7 +5,15 @@ import unittest
 from collections.abc import Sequence
 
 from quantrisk.metrics import annualized_volatility
-from quantrisk.portfolio import Portfolio, correlation_matrix, covariance_matrix
+from quantrisk.portfolio import (
+    CONDITION_NUMBER_REFUSE_LIMIT,
+    CONDITION_NUMBER_WARN_LIMIT,
+    PSD_TOLERANCE,
+    Portfolio,
+    correlation_matrix,
+    covariance_matrix,
+    validate_covariance,
+)
 from quantrisk.series import PriceSeries
 
 DATES = (
@@ -37,6 +45,103 @@ SERIES_A = series_from_returns("AAA", 100.0, RETURNS_A)
 SERIES_B = series_from_returns("BBB", 50.0, RETURNS_B)
 SERIES_C = series_from_returns("CCC", 75.0, (0.01, -0.02, 0.03, -0.01, 0.02, -0.03))
 PORTFOLIO = Portfolio(names=("AAA", "BBB"), weights=(0.6, 0.4))
+
+# The hand fixture's covariance matrix: eigenvalues (13 ± sqrt(29))e-4 / 2,
+# so its 2-norm condition number is (13 + sqrt(29)) / (13 - sqrt(29))
+# = (99 + 13 sqrt(29)) / 70 = 2.414388 — comfortably well conditioned.
+SIGMA = ((0.0004, 0.0001), (0.0001, 0.0009))
+SIGMA_CONDITION_NUMBER = (99.0 + 13.0 * math.sqrt(29.0)) / 70.0
+
+# Indefinite: eigenvalues -6.5685e-5 and 1.0657e-3. No return series can
+# produce this matrix; it must be rejected, not fed to any solver.
+INDEFINITE = ((0.0001, -0.0004), (-0.0004, 0.0009))
+
+# Barely indefinite: eigenvalues -5.0e-11 and 8.0e-4. The negative
+# eigenvalue sits inside the PSD tolerance floor of
+# -PSD_TOLERANCE * max(1, max_eig) = -1e-10. This is the shape a sample
+# covariance of near-collinear return series takes after floating-point
+# rounding: the true matrix is PSD by construction, but the computed one
+# can carry an eigenvalue a hair below zero. Rejecting it would reject
+# legitimate data, which is exactly why the tolerance exists.
+NEARLY_PSD = ((0.0004, 0.0004), (0.0004, 0.0004 - 1e-10))
+
+
+class CovarianceValidationTests(unittest.TestCase):
+    def test_the_hand_fixture_passes_with_positive_eigenvalues(self) -> None:
+        diagnostics = validate_covariance(SIGMA)
+        self.assertGreater(diagnostics.smallest_eigenvalue, 0.0)
+        self.assertGreater(diagnostics.largest_eigenvalue, diagnostics.smallest_eigenvalue)
+        self.assertAlmostEqual(diagnostics.condition_number, SIGMA_CONDITION_NUMBER, places=12)
+        self.assertIsNone(diagnostics.conditioning_warning)
+
+    def test_an_indefinite_matrix_is_rejected_naming_its_eigenvalue(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not positive semidefinite.*smallest eigenvalue"):
+            validate_covariance(INDEFINITE)
+
+    def test_an_asymmetric_matrix_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "symmetric"):
+            validate_covariance(((0.0004, 0.0002), (0.0001, 0.0009)))
+
+    def test_a_barely_negative_eigenvalue_inside_the_tolerance_passes(self) -> None:
+        # Floating-point covariance of near-collinear series: the true
+        # matrix is PSD, the computed eigenvalue is rounding noise below
+        # zero. The tolerance floor accepts it instead of rejecting
+        # legitimate data; near-singularity is still disclosed through
+        # the condition number, never hidden.
+        diagnostics = validate_covariance(NEARLY_PSD)
+        self.assertLess(diagnostics.smallest_eigenvalue, 0.0)
+        floor = PSD_TOLERANCE * max(1.0, diagnostics.largest_eigenvalue)
+        self.assertGreaterEqual(diagnostics.smallest_eigenvalue, -floor)
+
+    def test_the_same_matrix_fails_outside_a_tighter_tolerance(self) -> None:
+        with self.assertRaisesRegex(ValueError, "smallest eigenvalue"):
+            validate_covariance(NEARLY_PSD, tolerance=1e-12)
+
+
+class ConditioningTests(unittest.TestCase):
+    def test_the_fixture_portfolio_is_well_conditioned(self) -> None:
+        diagnostics = PORTFOLIO.covariance_diagnostics((SERIES_A, SERIES_B))
+        self.assertAlmostEqual(diagnostics.condition_number, SIGMA_CONDITION_NUMBER, places=12)
+        self.assertIsNone(diagnostics.conditioning_warning)
+
+    def test_near_collinear_series_carry_a_conditioning_warning(self) -> None:
+        # The echo series repeats AAA's returns plus a +/-1e-6 wiggle:
+        # correlation 1 - 7.5e-10, condition number 1.33e9 — inside the
+        # warn band, outside the refuse band. The numbers still compute
+        # (quadratic forms never invert the matrix) but the warning is
+        # carried, not hidden.
+        echo = series_from_returns(
+            "ECH",
+            100.0,
+            tuple(
+                value + wiggle
+                for value, wiggle in zip(
+                    RETURNS_A, (1e-6, -1e-6, 1e-6, -1e-6, 1e-6, -1e-6), strict=True
+                )
+            ),
+        )
+        pair = Portfolio(names=("AAA", "ECH"), weights=(0.5, 0.5))
+        diagnostics = pair.covariance_diagnostics((SERIES_A, echo))
+        self.assertGreater(diagnostics.condition_number, CONDITION_NUMBER_WARN_LIMIT)
+        self.assertLess(diagnostics.condition_number, CONDITION_NUMBER_REFUSE_LIMIT)
+        self.assertIsNotNone(diagnostics.conditioning_warning)
+        self.assertIn("condition number", diagnostics.conditioning_warning or "")
+        self.assertGreater(pair.annualized_volatility((SERIES_A, echo)), 0.0)
+
+    def test_perfectly_collinear_series_report_infinite_conditioning(self) -> None:
+        # A series whose returns are exactly twice AAA's makes the
+        # covariance exactly singular. Portfolio arithmetic (quadratic
+        # forms) still works — the existing diversification test relies
+        # on that — so the diagnosis reports an infinite condition
+        # number with a warning rather than refusing.
+        doubled = series_from_returns(
+            "DDD", 80.0, tuple(2.0 * value for value in SERIES_A.simple_returns())
+        )
+        pair = Portfolio(names=("AAA", "DDD"), weights=(0.7, 0.3))
+        diagnostics = pair.covariance_diagnostics((SERIES_A, doubled))
+        self.assertEqual(diagnostics.condition_number, math.inf)
+        self.assertIsNotNone(diagnostics.conditioning_warning)
+        self.assertAlmostEqual(pair.diversification_benefit((SERIES_A, doubled)), 0.0, places=12)
 
 
 class HandTableTests(unittest.TestCase):

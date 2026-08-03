@@ -28,6 +28,18 @@ number, and is never needed when only ``Σ⁻¹1`` is wanted. Everything
 without a closed form — long-only bounds, target-return equality — goes
 to SciPy's SLSQP, and the solver's answer is validated (success flag,
 constraint residuals, bounds) rather than trusted.
+
+Every covariance entering this module runs through the shared
+:func:`~quantrisk.portfolio.validate_covariance` path first, so an
+asymmetric or indefinite matrix is rejected at entry with its
+eigenvalue named. Because both solvers pass the matrix through a
+linear solve — which amplifies relative input noise by the matrix's
+condition number — a matrix conditioned beyond
+:data:`~quantrisk.portfolio.CONDITION_NUMBER_REFUSE_LIMIT` is refused
+outright, and one beyond
+:data:`~quantrisk.portfolio.CONDITION_NUMBER_WARN_LIMIT` proceeds with
+a ``conditioning_warning`` carried on every resulting
+:class:`FrontierPoint`.
 """
 
 from __future__ import annotations
@@ -41,20 +53,20 @@ import numpy.typing as npt
 from scipy.optimize import minimize
 
 from quantrisk.metrics import TRADING_DAYS_PER_YEAR
-from quantrisk.portfolio import _validate_aligned
-from quantrisk.series import MIN_ALIGN_SERIES, PriceSeries
+from quantrisk.portfolio import (
+    CONDITION_NUMBER_REFUSE_LIMIT,
+    CovarianceDiagnostics,
+    _require_number,
+    _validate_aligned,
+    validate_covariance,
+)
+from quantrisk.series import PriceSeries
 
 #: Absolute tolerance on the solver's constraint residuals and bound
 #: violations. SLSQP satisfies equality constraints far more tightly in
 #: practice; anything past this tolerance means the result is not a
 #: portfolio and is rejected rather than returned.
 SOLVER_TOLERANCE = 1e-8
-
-#: A covariance matrix must equal its transpose within this absolute
-#: tolerance. Matrices from :func:`~quantrisk.portfolio.covariance_matrix`
-#: are exactly symmetric; the tolerance only absorbs rounding in
-#: matrices the caller assembled elsewhere.
-SYMMETRY_TOLERANCE = 1e-12
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,46 +77,45 @@ class FrontierPoint:
     ``expected_return`` is the annual expected return actually attained
     (equal to the requested target up to solver tolerance) and
     ``volatility`` is annualized with the 252-day convention.
+    ``condition_number`` is the covariance matrix's 2-norm condition
+    number and ``conditioning_warning`` its disclosure when that number
+    exceeds :data:`~quantrisk.portfolio.CONDITION_NUMBER_WARN_LIMIT`
+    (``None`` otherwise); both describe the input matrix, so every
+    point of one :func:`efficient_frontier` call carries the same pair.
     """
 
     weights: tuple[float, ...]
     expected_return: float
     volatility: float
+    condition_number: float
+    conditioning_warning: str | None
 
 
-def _require_number(value: float, description: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ValueError(f"{description} is not a number")
-    if not math.isfinite(value):
-        raise ValueError(f"{description} is {value!r}; it must be finite")
-    return float(value)
+def _solvable_covariance(
+    covariance: Sequence[Sequence[float]],
+) -> tuple[npt.NDArray[np.float64], CovarianceDiagnostics]:
+    """Validate a covariance for use in a linear solve, or refuse.
 
+    Runs the shared entry validation, then applies this module's
+    stricter standard: a solve against a matrix with 2-norm condition
+    number beyond
+    :data:`~quantrisk.portfolio.CONDITION_NUMBER_REFUSE_LIMIT`
+    amplifies relative input noise by that factor, so the weights it
+    would produce are noise presented as precision, and refusing beats
+    returning them.
+    """
 
-def _validate_covariance(covariance: Sequence[Sequence[float]]) -> npt.NDArray[np.float64]:
-    rows = tuple(tuple(row) for row in covariance)
-    size = len(rows)
-    if size < MIN_ALIGN_SERIES:
-        raise ValueError("a covariance matrix needs at least two assets")
-    for index, row in enumerate(rows):
-        if len(row) != size:
-            raise ValueError(
-                f"covariance matrix must be square; row {index} has {len(row)} entries, "
-                f"expected {size}"
-            )
-        for column, value in enumerate(row):
-            _require_number(value, f"covariance entry [{index}][{column}]")
-    for index in range(size):
-        if rows[index][index] < 0.0:
-            raise ValueError(
-                f"covariance entry [{index}][{index}] is negative; variances cannot be"
-            )
-        for column in range(index):
-            if abs(rows[index][column] - rows[column][index]) > SYMMETRY_TOLERANCE:
-                raise ValueError(
-                    f"covariance matrix is not symmetric at [{index}][{column}] "
-                    f"within {SYMMETRY_TOLERANCE}"
-                )
-    return np.array(rows, dtype=np.float64)
+    diagnostics = validate_covariance(covariance)
+    if diagnostics.condition_number > CONDITION_NUMBER_REFUSE_LIMIT:
+        raise ValueError(
+            "covariance matrix is numerically singular: its 2-norm condition number "
+            f"{diagnostics.condition_number:.3e} exceeds "
+            f"{CONDITION_NUMBER_REFUSE_LIMIT:.0e}, so solved weights would amplify "
+            "relative input noise by that factor; remove the redundant asset or "
+            "shrink the covariance estimate"
+        )
+    matrix = np.array([tuple(row) for row in covariance], dtype=np.float64)
+    return matrix, diagnostics
 
 
 def _validate_expected_returns(
@@ -124,6 +135,8 @@ def _annualized_volatility(
     matrix: npt.NDArray[np.float64], weights: npt.NDArray[np.float64]
 ) -> float:
     variance = float(weights @ matrix @ weights)
+    # Defense in depth: entry validation already rejects indefinite
+    # matrices, so a negative variance here means a bug, not bad input.
     if variance < -SOLVER_TOLERANCE:
         raise ValueError(
             "covariance matrix is not positive semidefinite: "
@@ -222,16 +235,23 @@ def minimum_variance_portfolio(
     more and amplifies conditioning error for no benefit. With
     ``long_only=True`` there is no closed form and SLSQP minimizes the
     same quadratic under bounds; the solver result is validated, not
-    trusted. A singular matrix (a redundant asset) has no unique answer
-    and is rejected.
+    trusted. A singular or near-singular matrix (a redundant asset) has
+    no meaningful answer and is refused at entry by the conditioning
+    gate; callers wanting the diagnosis itself should use
+    :func:`~quantrisk.portfolio.validate_covariance`, since this
+    function's return type is the bare weights tuple.
     """
 
-    matrix = _validate_covariance(covariance)
+    matrix, _ = _solvable_covariance(covariance)
     size = len(matrix)
     if long_only:
         initial = np.full(size, 1.0 / size)
         weights = _solve_qp(matrix, initial, [_sum_to_one_constraint(size)], long_only=True)
         return tuple(float(value) for value in weights)
+    # Defense in depth: the eigenvalue validation and the conditioning
+    # gate already reject singular and indefinite matrices at entry, so
+    # these two guards should be unreachable; they stay because the
+    # closed form must never return weights from a solve that failed.
     try:
         base = np.linalg.solve(matrix, np.ones(size, dtype=np.float64))
     except np.linalg.LinAlgError as error:
@@ -305,10 +325,13 @@ def efficient_frontier(
     has the same expected return, in which case only that value is.
     Volatility along the returned points falls until the global
     minimum-variance return and rises after it — the frontier is convex
-    in the target — and the tests assert exactly that shape.
+    in the target — and the tests assert exactly that shape. Every
+    returned point carries the covariance's 2-norm condition number
+    and, past the warn limit, its ``conditioning_warning``; past the
+    refuse limit the whole call is refused at entry.
     """
 
-    matrix = _validate_covariance(covariance)
+    matrix, diagnostics = _solvable_covariance(covariance)
     mu = _validate_expected_returns(expected_returns, len(matrix))
     targets = tuple(
         _require_number(value, f"target return [{index}]")
@@ -343,6 +366,8 @@ def efficient_frontier(
                 weights=tuple(float(value) for value in weights),
                 expected_return=float(weights @ mu),
                 volatility=_annualized_volatility(matrix, weights),
+                condition_number=diagnostics.condition_number,
+                conditioning_warning=diagnostics.conditioning_warning,
             )
         )
     return tuple(points)

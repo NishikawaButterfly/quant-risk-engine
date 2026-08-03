@@ -61,6 +61,14 @@ class ResultsJsonTests(SampleRunCase):
         self.assertAlmostEqual(math.fsum(contributions.values()), 1.0, places=12)
         self.assertAlmostEqual(contributions["AAA"], 0.355176414470461, places=12)
 
+    def test_conditioning_diagnostics_are_exposed_and_quiet(self) -> None:
+        # The synthetic assets are far from collinear, so the covariance
+        # condition number is small and no conditioning warning appears.
+        metrics = self.results["portfolio"]["metrics"]
+        self.assertGreaterEqual(metrics["condition_number"], 1.0)
+        self.assertLess(metrics["condition_number"], 1e8)
+        self.assertIsNone(metrics["conditioning_warning"])
+
     def test_per_asset_metrics_cover_every_holding(self) -> None:
         assets = self.results["assets"]
         self.assertEqual(sorted(assets), ["AAA", "BBB", "CCC"])
@@ -261,6 +269,58 @@ class MinimalSpecReportTests(unittest.TestCase):
         self.assertIsNone(results["benchmark"])
         self.assertIsNone(results["monte_carlo"])
         self.assertEqual(results["stress"], {"windows": [], "shocks": []})
+
+    def test_an_ill_conditioned_portfolio_is_flagged_under_caveats(self) -> None:
+        # Two near-collinear price series: the second repeats the
+        # first's returns plus a +/-1e-6 wiggle, putting the covariance
+        # condition number at 1.33e9 — inside the warn band. The run
+        # succeeds, and the report discloses the conditioning under
+        # Caveats instead of failing or staying silent.
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        directory = Path(holder.name)
+        returns_a = (0.02, -0.01, -0.02, 0.02, 0.03, 0.02)
+        wiggles = (1e-6, -1e-6, 1e-6, -1e-6, 1e-6, -1e-6)
+        prices_a = [100.0]
+        prices_b = [100.0]
+        for value, wiggle in zip(returns_a, wiggles, strict=True):
+            prices_a.append(prices_a[-1] * (1.0 + value))
+            prices_b.append(prices_b[-1] * (1.0 + value + wiggle))
+        dates = (
+            "2026-01-05",
+            "2026-01-06",
+            "2026-01-07",
+            "2026-01-08",
+            "2026-01-09",
+            "2026-01-12",
+            "2026-01-13",
+        )
+        rows = ["Date,AAA,ECH"]
+        for date, price_a, price_b in zip(dates, prices_a, prices_b, strict=True):
+            rows.append(f"{date},{price_a!r},{price_b!r}")
+        (directory / "prices.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+        spec_path = directory / "spec.json"
+        spec_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "prices_csv": "prices.csv",
+                    "portfolio": {"AAA": 0.5, "ECH": 0.5},
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = directory / "results"
+        code, _ = run_cli(["run", "--spec", str(spec_path), "--output", str(output)])
+        self.assertEqual(code, 0)
+        report = (output / "report.md").read_text(encoding="utf-8")
+        self.assertIn("- Numerical conditioning: ", report)
+        self.assertIn("ill-conditioned", report)
+        results = json.loads((output / "results.json").read_text(encoding="utf-8"))
+        metrics = results["portfolio"]["metrics"]
+        self.assertGreater(metrics["condition_number"], 1e8)
+        self.assertLess(metrics["condition_number"], 1e12)
+        self.assertIn("condition number", metrics["conditioning_warning"])
 
     def test_a_parametric_normal_spec_names_its_mode_in_the_report(self) -> None:
         holder = tempfile.TemporaryDirectory()
