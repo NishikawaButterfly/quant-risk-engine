@@ -390,28 +390,31 @@ Nothing here forecasts anything either — a backtest describes what a
 stated policy would have done on the supplied history, under the
 conventions below.
 
-### The look-ahead guarantee
+### The look-ahead boundary
 
-The design's core claim: a policy cannot peek, because there is
-nothing to peek at. At every decision the engine hands the policy a
-`PolicyWindow` built by *slicing* the aligned data at the decision
-date — the object physically contains the dates and prices strictly
-before that date and nothing else. Look-ahead is not a rule the policy
-is trusted to follow; the data on or after the decision date is absent
-from the only object the policy receives, so expressing a peek raises
-an error instead of returning a number. The window's constructor
-rejects any history that touches its own decision date, and the tests
-assert, for every rebalance of a run, that the window ends exactly one
-trading day before the decision date.
+The design's core claim: the policy interface exposes only
+observations strictly preceding the decision date. At every decision
+the engine hands the policy a `PolicyWindow` built by *slicing* the
+aligned data at the decision date — the object physically contains
+the dates and prices strictly before that date and nothing else, so a
+policy that works from its window alone has no future data to read,
+and looking up the decision date or indexing past the window's end
+raises an error instead of returning a number. The window's
+constructor rejects any history that touches its own decision date,
+and the tests assert, for every rebalance of a run, that the window
+ends exactly one trading day before the decision date.
 
-The tests also prove peeking would change the answer: a deliberately
-cheating policy — handed the full series separately, outside the
-interface — strictly beats an honest momentum policy on a
-mean-reverting fixture where the trailing winner is always the forward
-loser. That gap is exactly why the interface must make the cheat
-inexpressible, and the same tests show the cheat's first move
-(locating the decision date in the data) raises when attempted through
-the window.
+The boundary stops at the interface: a Python callable can still
+reach future data through closures, external state, files, or APIs,
+so caller-supplied policies remain responsible for not accessing
+future data through anything outside their window. The tests prove
+why that responsibility matters: a deliberately cheating policy —
+handed the full series separately, reaching around the interface —
+strictly beats an honest momentum policy on a mean-reverting fixture
+where the trailing winner is always the forward loser. That gap is
+exactly what the interface removes from the data a policy is handed,
+and the same tests show the cheat's first move (locating the decision
+date in the data) raises when attempted through the window alone.
 
 ### Drift versus daily rebalancing
 

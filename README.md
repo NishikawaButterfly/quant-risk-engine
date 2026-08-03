@@ -37,10 +37,13 @@ under stated conventions — that is the whole product.
   estimators, and the engine never defaults to them silently.
 - Look-ahead-safe backtesting: a walk-forward engine whose policies
   receive a `PolicyWindow` sliced strictly before the decision date —
-  the object physically contains no later data, so peeking is
-  inexpressible rather than merely forbidden, and a deliberately
-  cheating policy in the test suite proves peeking would change the
-  answer. Rebalancing runs on an explicit trading-day interval with
+  the interface exposes only observations strictly preceding the
+  decision, so a policy that works from its window alone has no
+  future data to read. Caller-supplied policies remain responsible
+  for not reaching around the interface to future data through
+  external state or external data sources; a deliberately cheating
+  policy in the test suite does exactly that and proves peeking would
+  change the answer. Rebalancing runs on an explicit trading-day interval with
   buy-and-hold drift between decisions, proportional transaction
   costs charged on turnover at every rebalance, and a cash warmup
   (earning zero) until the policy's declared minimum history.
