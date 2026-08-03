@@ -17,7 +17,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -162,7 +162,11 @@ class PortfolioNumpyScalarTests(unittest.TestCase):
     def test_numpy_float64_and_int64_weights_are_accepted(self) -> None:
         held = Portfolio(names=("AAA", "BBB"), weights=(np.float64(0.6), np.float64(0.4)))
         self.assertFalse(held.has_short_positions)
-        whole = Portfolio(names=("AAA", "BBB"), weights=(np.int64(1), np.float64(0.0)))
+        # np.int64 satisfies the runtime contract (numbers.Real) but not
+        # the tuple[float, ...] annotation; the cast exercises the path
+        # an untyped caller takes.
+        whole_weights = cast("tuple[float, ...]", (np.int64(1), np.float64(0.0)))
+        whole = Portfolio(names=("AAA", "BBB"), weights=whole_weights)
         self.assertFalse(whole.has_short_positions)
 
 
