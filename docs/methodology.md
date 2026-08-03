@@ -598,6 +598,93 @@ fixture, extra downside. A benchmark that never fell has no falling
 days to measure, so that side's ratio is `None` rather than a
 fabricated number; the tests exercise both empty sides.
 
+## Stress scenarios
+
+Two kinds of stress with different epistemic standing, kept apart in
+the code and in this document (`tests/test_stress.py` asserts every
+digit below).
+
+### Historical windows
+
+A historical stress names a date window and replays the portfolio's
+own daily return series — the weighted, daily-rebalanced returns of
+the portfolio section above — through it, reporting the window's total
+return, its annualized volatility, and its deepest drawdown. Both
+window dates must lie inside the aligned grid (a window reaching
+outside the data would silently describe a shorter period than its
+name claims), the bounds themselves need not be trading days, and the
+window must cover at least five observations, so at least four returns
+fall inside it. The return landing on the window's first date belongs
+to the day before the window and is excluded.
+
+Worked by hand on the two-asset fixture with the 60/40 portfolio: the
+window 2026-01-06 through 2026-01-12 covers five dates, and the
+portfolio returns inside it are the middle four entries of r(p):
+
+```text
+r(window) = (0.006, -0.024, 0.026, 0.014)
+```
+
+Total return compounds them:
+
+```text
+1.006 × 0.976 × 1.026 × 1.014 = 1.021487635584
+total return                  = 0.021488
+```
+
+Volatility inside the window is the usual sample convention over the
+four returns:
+
+```text
+mean            = 0.022 / 4 = 0.0055
+deviations      = 0.0005, -0.0295, 0.0205, 0.0085
+sum of squares  = 0.00000025 + 0.00087025 + 0.00042025 + 0.00007225
+                = 0.001363
+sample variance = 0.001363 / 3
+volatility      = sqrt(0.001363 / 3 × 252) = sqrt(0.114492) = 0.338367
+```
+
+The drawdown runs over the compounded value path inside the window,
+starting from 1.0:
+
+| Date | Value | Running peak | Drawdown |
+| --- | ---: | ---: | ---: |
+| 2026-01-06 | 1.0 | 1.0 | 0 |
+| 2026-01-07 | 1.006 | 1.006 | 0 |
+| 2026-01-08 | 0.981856 | 1.006 | 1 − 0.976 = 0.024 |
+| 2026-01-09 | 1.007384256 | 1.007384256 | 0 |
+| 2026-01-12 | 1.021487635584 | 1.021487635584 | 0 |
+
+Maximum drawdown exactly 0.024 (0.981856 / 1.006 = 0.976), peak
+2026-01-07, trough 2026-01-08.
+
+### Hypothetical shocks
+
+A shock stress names a one-day shock vector: one simple-return shock
+per held asset, each strictly above −1 because a positive price cannot
+lose more than everything. A missing asset is rejected, not defaulted
+to zero — an unshocked asset is itself a scenario assumption the
+author must write down. The portfolio's one-day return under the
+vector is the weight-weighted sum. With the 60/40 portfolio and shocks
+of −20% on A and −5% on B:
+
+```text
+0.6 × (−0.20) + 0.4 × (−0.05) = −0.12 − 0.02 = −0.14
+```
+
+exactly, and the test asserts exact equality, not a tolerance. An
+all-zero vector returns exactly zero.
+
+For plain long or short positions in the assets themselves that
+weighted sum is exact for a single day. It is still an approximation
+of any real event, in three stated ways: the vector is *chosen*, so no
+probability attaches to the result; the co-movements are frozen
+exactly as written, so shocking one asset while holding the others at
+zero asserts a correlation the history may flatly contradict; and
+nothing propagates past the single day — no follow-on volatility, no
+liquidity effect, no rebalancing. A shock table describes the
+scenarios its author wrote down, never their likelihood.
+
 ## Synthetic sample data
 
 `sample-data/prices.csv` holds one weekday year (2025, 261 rows) of

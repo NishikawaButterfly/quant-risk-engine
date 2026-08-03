@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "prices_csv": "prices.csv",
+  "portfolio": {
+    "AAA": 0.5,
+    "BBB": 0.3,
+    "CCC": 0.2
+  },
+  "risk_free_rate_annual": 0.02,
+  "benchmark": "DDD",
+  "stress": {
+    "windows": {
+      "spring-drawdown": {
+        "start": "2025-03-03",
+        "end": "2025-04-30"
+      }
+    },
+    "shocks": {
+      "broad-selloff": {
+        "AAA": -0.1,
+        "BBB": -0.1,
+        "CCC": -0.1
+      },
+      "concentration-hit": {
+        "AAA": -0.05,
+        "BBB": -0.02,
+        "CCC": -0.2
+      }
+    }
+  },
+  "monte_carlo": {
+    "mode": "bootstrap",
+    "runs": 1000,
+    "horizon_days": 252,
+    "seed": 2026
+  }
+}

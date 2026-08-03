@@ -57,6 +57,18 @@ under stated conventions — that is the whole product.
   reproducibility — compounded into a terminal-value distribution
   with interpolated percentiles, the probability of finishing below
   the initial value, and each mode's blind spot documented.
+- Stress scenarios: named historical windows replayed through the
+  portfolio's own return series (total return, volatility, and
+  drawdown inside the window), and named hypothetical one-day shock
+  vectors reported as the weighted sum — exact for one day of plain
+  positions, and documented as linear and correlation-free, so the
+  scenario author owns the co-movements.
+- A CLI and reproducible reports: one JSON spec (prices CSV, weights,
+  optional risk-free rate, benchmark, stress, and seeded Monte Carlo)
+  drives `quantrisk run`, which writes `results.json` and a
+  committee-style `report.md` with no timestamp anywhere — the same
+  spec always produces byte-identical artifacts, and a test asserts
+  it. `quantrisk validate` checks a spec without computing.
 
 Each convention — the 252-day annualization, the n − 1 volatility
 denominator, the Sortino target, the interpolated percentile, the sign
@@ -65,10 +77,32 @@ next to a hand-worked example the tests assert digit for digit.
 
 ## What does not exist yet
 
-Stress scenarios, the CLI, and reproducible reports are planned but not
-built. The README will say so when they land, and not before.
+Everything on the original roadmap — stress scenarios, the CLI, and
+reproducible reports — has now landed. What remains open is tracked in
+the issues: a block bootstrap that preserves short-range dependence,
+and an interest convention for backtest cash are the known candidates.
+Nothing else is claimed.
 
 ## Usage
+
+Install the package and point the CLI at a spec file:
+
+```bash
+python -m pip install -e .
+quantrisk validate --spec sample-data/portfolio-spec.json
+quantrisk run --spec sample-data/portfolio-spec.json --output results
+```
+
+The run writes `results.json`, with every computed number plus the
+Monte Carlo seed and run count, and `report.md`, a short report meant
+to be read in a few minutes: the holdings and conventions, per-asset
+and portfolio risk with contributions, the benchmark comparison, the
+stress tables, the Monte Carlo percentiles, and the caveats. Neither
+artifact embeds a timestamp, so the same spec always produces
+byte-identical output. The spec format is documented in
+[docs/cli.md](docs/cli.md).
+
+The library remains directly usable:
 
 ```python
 from quantrisk import PriceSeries, annualized_volatility, historical_var, max_drawdown
