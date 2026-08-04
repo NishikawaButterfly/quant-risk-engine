@@ -29,6 +29,13 @@ without a closed form — long-only bounds, target-return equality — goes
 to SciPy's SLSQP, and the solver's answer is validated (success flag,
 constraint residuals, bounds) rather than trusted.
 
+A target-return sweep is not the efficient frontier by itself. Targets
+below the minimum-variance return produce dominated portfolios — same
+risk available with strictly more return — so every
+:class:`FrontierPoint` carries an ``efficient`` flag separating the
+efficient upper branch from the dominated lower one, with the boundary
+computed under the same constraint set as the sweep.
+
 Every covariance entering this module runs through the shared
 :func:`~quantrisk.portfolio.validate_covariance` path first, so an
 asymmetric or indefinite matrix is rejected at entry with its
@@ -71,12 +78,18 @@ SOLVER_TOLERANCE = 1e-8
 
 @dataclass(frozen=True, slots=True)
 class FrontierPoint:
-    """One efficient-frontier portfolio.
+    """One portfolio from a frontier sweep — efficient or dominated.
 
     ``weights`` are fractions summing to one, in asset order.
     ``expected_return`` is the annual expected return actually attained
     (equal to the requested target up to solver tolerance) and
     ``volatility`` is annualized with the 252-day convention.
+    ``efficient`` is ``True`` when the point's expected return is at or
+    above (within :data:`SOLVER_TOLERANCE`) the minimum-variance
+    return under the sweep's own constraint set; points below it are
+    the dominated lower branch — for each there is a portfolio with
+    the same risk and strictly higher return — and only the
+    ``efficient`` points form the efficient frontier.
     ``condition_number`` is the covariance matrix's 2-norm condition
     number and ``conditioning_warning`` its disclosure when that number
     exceeds :data:`~quantrisk.portfolio.CONDITION_NUMBER_WARN_LIMIT`
@@ -87,6 +100,7 @@ class FrontierPoint:
     weights: tuple[float, ...]
     expected_return: float
     volatility: float
+    efficient: bool
     condition_number: float
     conditioning_warning: str | None
 
@@ -241,11 +255,25 @@ def minimum_variance_portfolio(
     """
 
     matrix, _ = _solvable_covariance(covariance)
+    weights = _minimum_variance_weights(matrix, long_only=long_only)
+    return tuple(float(value) for value in weights)
+
+
+def _minimum_variance_weights(
+    matrix: npt.NDArray[np.float64], *, long_only: bool
+) -> npt.NDArray[np.float64]:
+    """Minimum-variance weights for an already-validated matrix.
+
+    The shared core of :func:`minimum_variance_portfolio` and the
+    efficient/dominated classification in :func:`efficient_frontier`:
+    both need the same portfolio under the same constraint set, and
+    the frontier must not validate the covariance a second time.
+    """
+
     size = len(matrix)
     if long_only:
         initial = np.full(size, 1.0 / size)
-        weights = _solve_qp(matrix, initial, [_sum_to_one_constraint(size)], long_only=True)
-        return tuple(float(value) for value in weights)
+        return _solve_qp(matrix, initial, [_sum_to_one_constraint(size)], long_only=True)
     # Defense in depth: the eigenvalue validation and the conditioning
     # gate already reject singular and indefinite matrices at entry, so
     # these two guards should be unreachable; they stay because the
@@ -262,7 +290,7 @@ def minimum_variance_portfolio(
             "covariance matrix is not positive definite; "
             "it cannot be a covariance matrix of non-redundant assets"
         )
-    return tuple(float(value) for value in base / total)
+    return base / total
 
 
 def _check_targets_reachable(
@@ -321,9 +349,20 @@ def efficient_frontier(
     expected returns is unreachable and rejected up front; without
     bounds any target is reachable through leverage unless every asset
     has the same expected return, in which case only that value is.
-    Volatility along the returned points falls until the global
-    minimum-variance return and rises after it — the frontier is convex
-    in the target — and the tests assert exactly that shape. Every
+
+    The sweep answers every requested target, and not every requested
+    target is efficient. Volatility along the returned points falls
+    until the minimum-variance return and rises after it, and each
+    point below that return is dominated: the minimum-variance
+    portfolio carries the same or less risk with strictly more return.
+    Rather than silently dropping targets the caller asked for, every
+    point carries an ``efficient`` flag — ``True`` from the
+    minimum-variance return upward, ``False`` on the dominated lower
+    branch — computed against the minimum-variance portfolio under
+    this sweep's own constraint set, since the long-only minimum can
+    differ from the unconstrained one. Only the ``efficient`` points
+    are the efficient frontier; plotting the full sweep under that
+    name is exactly the mistake the flag exists to prevent. Every
     returned point carries the covariance's 2-norm condition number
     and, past the warn limit, its ``conditioning_warning``; past the
     refuse limit the whole call is refused at entry.
@@ -335,6 +374,11 @@ def efficient_frontier(
     if not targets:
         raise ValueError("need at least one target return")
     _check_targets_reachable(targets, mu, long_only=long_only)
+    # The efficient/dominated boundary is the minimum-variance return
+    # under THIS sweep's constraint set: long-only sweeps compare
+    # against the long-only minimum, which can differ from the
+    # unconstrained one when the latter holds short positions.
+    minimum_variance_return = float(_minimum_variance_weights(matrix, long_only=long_only) @ mu)
     # With every expected return equal, the (already validated) return
     # constraint is the budget constraint scaled — a redundant row that
     # stalls SLSQP — so it is dropped rather than handed to the solver.
@@ -359,8 +403,12 @@ def efficient_frontier(
         points.append(
             FrontierPoint(
                 weights=tuple(float(value) for value in weights),
-                expected_return=float(weights @ mu),
+                expected_return=attained,
                 volatility=_annualized_volatility(matrix, weights),
+                # The boundary point IS the minimum-variance portfolio,
+                # so the comparison is >= with the solver tolerance
+                # absorbing the float dust of two separate solves.
+                efficient=attained >= minimum_variance_return - SOLVER_TOLERANCE,
                 condition_number=diagnostics.condition_number,
                 conditioning_warning=diagnostics.conditioning_warning,
             )
