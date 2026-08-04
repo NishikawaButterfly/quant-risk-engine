@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, NoReturn
 
+from quantrisk.feasibility import check_feasibility
 from quantrisk.io import RunSpec, load_spec, write_run_artifacts
 from quantrisk.report import evaluate_spec, render_report, results_payload
 
@@ -65,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         spec = load_spec(args.spec)
+        # Both commands prove feasibility at the same point, so a spec
+        # that validate accepts is a spec whose evaluation run completes:
+        # any late evaluation failure surfaces here, with one message.
+        check_feasibility(spec)
         if args.command == "validate":
             print(json.dumps(_describe(spec), indent=2, sort_keys=True))
             return 0

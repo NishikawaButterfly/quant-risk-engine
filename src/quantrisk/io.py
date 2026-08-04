@@ -375,8 +375,11 @@ def load_spec(path: str | Path) -> RunSpec:
     relative and stay inside the spec's directory. Cross-references are
     checked here — portfolio tickers and the benchmark must be CSV
     columns, the benchmark must not carry a weight, and every stress
-    scenario must be valid against the loaded data — so a spec that
-    loads is a spec that runs.
+    scenario must be valid against the loaded data. Whether the loaded
+    spec can then be *evaluated* — constant series, too few paired
+    returns, non-finite figures — is the job of
+    :func:`quantrisk.feasibility.check_feasibility`, which the CLI
+    calls right after this function on both its paths.
     """
 
     spec_path = Path(path)
