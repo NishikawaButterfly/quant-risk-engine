@@ -18,9 +18,14 @@ directory. A spec that could read files elsewhere on the machine is a
 confused deputy waiting to happen, and a spec whose data does not
 travel with it cannot be reproduced by whoever receives it.
 
-Writing stages every artifact next to its target and publishes with
-atomic replaces, and it refuses to overwrite existing results unless
-explicitly forced.
+Writing publishes the artifact pair atomically as a pair: both files
+are staged next to their targets, any existing pair is set aside, and
+only then are both promoted with atomic replaces. If anything fails
+before both promotions complete, the staged files are removed and the
+set-aside pair is restored, so the output directory holds either the
+complete new pair or exactly what it held before — never one new file
+beside one old one. Overwriting existing results still requires an
+explicit ``force``.
 """
 
 from __future__ import annotations
@@ -469,6 +474,87 @@ def _stage_text(path: Path, content: str) -> Path:
     return temporary_path
 
 
+def _reserve_backup_path(path: Path) -> Path:
+    """A collision-safe sibling name for setting an existing target aside."""
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".backup.tmp",
+    )
+    os.close(descriptor)
+    backup_path = Path(temporary_name)
+    backup_path.unlink()
+    return backup_path
+
+
+def _undo_publication(published: set[Path], backups: dict[Path, Path]) -> list[OSError]:
+    """Remove promoted files and move backups back, collecting what failed."""
+
+    errors: list[OSError] = []
+    for target in published.difference(backups):
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(exc)
+    for target, backup in reversed(tuple(backups.items())):
+        try:
+            backup.replace(target)
+        except OSError as exc:
+            errors.append(exc)
+    return errors
+
+
+def _publish_pair(artifacts: tuple[tuple[Path, str], ...]) -> None:
+    """Stage every artifact, publish them together, restore the prior pair on failure.
+
+    Three phases: stage all contents beside their targets, move every
+    existing target aside to a backup name, then promote every staged
+    file with an atomic :meth:`Path.replace`. A failure in any phase
+    unwinds this invocation completely — promoted files are removed,
+    backups are moved back — so the directory ends holding either the
+    whole new pair or exactly the files it held before. Each individual
+    step is an ``os.replace`` within one directory, so it never spans
+    filesystems; on Windows it would fail if another process held a
+    published file open, in which case the rollback runs and the raised
+    error names any file it could not restore.
+    """
+
+    staged: dict[Path, Path] = {}
+    backups: dict[Path, Path] = {}
+    published: set[Path] = set()
+    try:
+        for target, content in artifacts:
+            staged[target] = _stage_text(target, content)
+
+        for target, _ in artifacts:
+            if target.exists():
+                backup = _reserve_backup_path(target)
+                target.replace(backup)
+                backups[target] = backup
+
+        for target, _ in artifacts:
+            staged[target].replace(target)
+            published.add(target)
+    except Exception as publication_error:
+        rollback_errors = _undo_publication(published, backups)
+        if rollback_errors:
+            raise OSError(
+                "artifact publication failed and rollback was incomplete; the "
+                "previous artifacts survive as hidden .backup.tmp files beside "
+                f"their targets: {'; '.join(str(error) for error in rollback_errors)}"
+            ) from publication_error
+        raise
+    else:
+        for backup in backups.values():
+            with suppress(OSError):
+                backup.unlink(missing_ok=True)
+    finally:
+        for temporary in staged.values():
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
+
 def write_run_artifacts(
     output_directory: str | Path,
     results_json: str,
@@ -476,11 +562,15 @@ def write_run_artifacts(
     *,
     force: bool = False,
 ) -> tuple[Path, Path]:
-    """Publish ``results.json`` and ``report.md``, refusing silent overwrite.
+    """Publish ``results.json`` and ``report.md`` as one atomic pair.
 
-    Both artifacts are staged next to their targets first, so a failure
-    while staging publishes nothing, and each publication is an atomic
-    replace. Existing results are only replaced when ``force`` is set.
+    The two artifacts are one result, so they publish together or not
+    at all: on any failure the output directory holds either the
+    complete new pair or exactly what it held before — a forced
+    overwrite that fails restores the previous pair byte for byte.
+    Existing results are only replaced when ``force`` is set. A process
+    kill in mid-publish can leave hidden ``.*.tmp`` staging or backup
+    files beside the targets; they are safe to delete.
     """
 
     output = Path(output_directory)
@@ -491,14 +581,5 @@ def write_run_artifacts(
         names = ", ".join(path.name for path in existing)
         raise FileExistsError(f"refusing to overwrite {names}; pass --force to replace them")
 
-    staged: list[tuple[Path, Path]] = []
-    try:
-        for target, content in ((results_path, results_json), (report_path, report_markdown)):
-            staged.append((target, _stage_text(target, content)))
-        for target, temporary in staged:
-            temporary.replace(target)
-    finally:
-        for _, temporary in staged:
-            with suppress(OSError):
-                temporary.unlink(missing_ok=True)
+    _publish_pair(((results_path, results_json), (report_path, report_markdown)))
     return results_path, report_path
