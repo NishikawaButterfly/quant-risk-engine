@@ -123,6 +123,23 @@ class ConventionTests(unittest.TestCase):
         self.assertEqual(result.peak_date, "2026-01-05")
         self.assertEqual(result.trough_date, "2026-01-06")
 
+    def test_drawdown_dates_are_session_labels_across_a_weekend(self) -> None:
+        # Peak on Friday 2026-01-09, trough on Monday 2026-01-12: the
+        # dates are session labels under the session model
+        # (docs/methodology.md), so this drawdown is one session deep
+        # even though the calendar span is three days, and its depth is
+        # the plain session-over-session decline with no weekend
+        # accrual.
+        weekend = PriceSeries(
+            "WKND",
+            ("2026-01-08", "2026-01-09", "2026-01-12", "2026-01-13"),
+            (100.0, 110.0, 99.0, 111.0),
+        )
+        result = max_drawdown(weekend)
+        self.assertEqual(result.peak_date, "2026-01-09")
+        self.assertEqual(result.trough_date, "2026-01-12")
+        self.assertEqual(result.depth, 1.0 - 99.0 / 110.0)
+
 
 class ValidationTests(unittest.TestCase):
     def test_too_few_returns_are_rejected(self) -> None:

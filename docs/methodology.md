@@ -16,8 +16,55 @@ future.
 Prices are daily closes, positive and finite, on strictly increasing
 ISO dates. Returns are plain fractions: 0.01 means one percent.
 Metrics over returns take periodic (daily) returns; the annualization
-convention is 252 trading days per year. Mean returns scale linearly
-with time and volatilities with its square root.
+convention is 252 trading sessions per year, in the sense of the
+session model below. Mean returns scale linearly with time and
+volatilities with its square root.
+
+### Session model
+
+Each row of a price series is one trading session, and consecutive
+rows are consecutive sessions. That sentence is the engine's entire
+calendar; everything else follows from it.
+
+- **A calendar gap carries no information.** The gap between two
+  successive dates — a weekend, a holiday, a trading halt, missing
+  data — is invisible to every computation. No return accrues across
+  it: between a Friday close and the following Monday close there is
+  exactly one session return, `p_mon / p_fri − 1`, exactly as if the
+  rows were a Tuesday and a Wednesday. Returns compound session over
+  session regardless of the calendar distance between them.
+- **252 counts sessions, not calendar days.** A year of the model is
+  252 rows, whatever their calendar spacing. Annualized volatility,
+  Sharpe, Sortino, the backtest's annualized return, and the Monte
+  Carlo horizon all scale by session counts.
+- **Dates are labels, not quantities.** Dates order and identify
+  sessions; no metric measures the calendar distance between two of
+  them. Drawdown peak and trough dates are session labels, and the
+  drawdown's duration is the number of sessions between them — the
+  calendar span those dates suggest can be longer, because the
+  weekends and holidays in between are not sessions.
+- **The weekday is irrelevant.** The engine knows no exchange
+  calendar, so a date falling on a Saturday or Sunday is accepted:
+  some markets (cryptocurrencies, some futures) trade every day of
+  the week, and under the session model nothing distinguishes their
+  rows from weekday rows.
+- **The flip side: gaps are indistinguishable.** A holiday, a halt,
+  and a lost row of data all look identical — an absent row — and a
+  gap caused by lost data silently folds the missing movement into
+  one session return. If that distinction matters, it must be
+  resolved upstream, where the data's provenance is known; the
+  alignment policy below keeps such decisions visible for the
+  cross-asset case.
+
+Validation enforces exactly what the model requires and nothing more.
+Dates must be well-formed canonical ISO `YYYY-MM-DD` — parsed as real
+calendar dates, so an impossible `2026-13-01` is rejected outright and
+a non-canonical `2026-1-5` is rejected because it would break the
+engine's reliance on lexicographic order equaling chronological order
+— and strictly increasing: no duplicates, no backwards rows. Every
+rejection names the owning series (or window) and the offending value.
+Calendar gaps are never rejected; under the model they are the norm,
+not an anomaly.
 
 ### Input contract for numbers
 
@@ -54,7 +101,10 @@ intersection only, nothing else. Forward-filling missing dates is a
 deliberate non-feature of this version: a filled price is a fabricated
 observation with zero return, it deflates volatility and correlation
 estimates, and the caller cannot see that it happened. Gaps must be
-resolved upstream, where they are visible.
+resolved upstream, where they are visible. The shared grid is a new
+session sequence under the session model: dates the intersection
+dropped become ordinary calendar gaps, and the surviving returns
+compound across them like any other session pair.
 
 ## The hand-worked fixture
 
@@ -78,7 +128,9 @@ and one six-day price path for the drawdown:
 ## Annualized volatility
 
 The sample standard deviation of periodic returns (denominator n − 1),
-times the square root of 252:
+times the square root of 252. The 252 annualizes session counts under
+the session model above — every return is one session, however many
+calendar days separate its two observations:
 
 ```text
 mean            = (0.01 + 0.02 - 0.03 + 0.04 - 0.02) / 5 = 0.004
@@ -139,6 +191,13 @@ dates; ties keep the earliest trough.
 Maximum drawdown 0.039216, peak 2026-01-06, trough 2026-01-09. A
 series that never declines reports depth zero with both dates on the
 first observation.
+
+The peak and trough dates are session labels under the session model:
+the drawdown lasted the number of sessions between them (three here),
+and where the two dates straddle a weekend or holiday the calendar
+span is longer than the session count. A peak on a Friday with a
+trough the following Monday is a one-session drawdown, its depth the
+plain session return with no weekend accrual.
 
 ## Historical VaR and CVaR
 
@@ -501,10 +560,13 @@ weights drifting with prices — and trades only on rebalance days,
 where the cost is charged. With a daily schedule and zero costs the
 two conventions coincide, and a test asserts that equivalence.
 
-The schedule is an explicit interval in trading days: the first
-decision falls on the first day with the policy's declared
-`min_history_days` observed days behind it, and further decisions come
-every `schedule` trading days after that. Days before the first
+The schedule is an explicit interval in trading sessions — rows of
+the aligned grid, per the session model, so a weekend between two
+rows does not stretch the interval and a Monday decision's window
+ends on the preceding Friday. The first decision falls on the first
+day with the policy's declared `min_history_days` observed days
+behind it, and further decisions come every `schedule` sessions after
+that. Days before the first
 decision are held in cash, and cash earns exactly zero in this
 version — no interest convention is smuggled in. The value path stays
 flat at the initial value until the first rebalance day.

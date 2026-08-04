@@ -62,8 +62,9 @@ class StressWindow:
     def __post_init__(self) -> None:
         if not self.name or not self.name.strip():
             raise ValueError("stress window name must be a nonempty string")
-        start = _parse_iso_date(self.start)
-        end = _parse_iso_date(self.end)
+        owner = f"stress window {self.name!r}"
+        start = _parse_iso_date(self.start, owner)
+        end = _parse_iso_date(self.end, owner)
         if end < start:
             raise ValueError(
                 f"stress window {self.name!r} is reversed: start {self.start} "
@@ -131,7 +132,10 @@ def historical_stress(
     outside the data would silently describe a shorter period than its
     name claims, so it is rejected instead — and must cover at least
     :data:`MIN_WINDOW_OBSERVATIONS` grid dates. The dates only bound
-    the window; they need not be trading days themselves.
+    the window; they need not be sessions of the grid themselves, and
+    the observations inside the window are counted in grid sessions
+    under the session model (``docs/methodology.md``), so a window
+    spanning a weekend covers no more observations than its rows.
 
     Results come back in the order the windows were given.
     """
