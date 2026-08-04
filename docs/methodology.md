@@ -790,6 +790,26 @@ the full percentile vector and the full terminal array — and run
 counts are bounded to [100, 20000]: fewer runs make tail percentiles
 meaningless, more buy precision the input data cannot support.
 
+### Memory shape: draws are processed in blocks
+
+The draws are never materialized as one `runs × horizon` matrix.
+Both modes draw and compound in blocks of at most `BLOCK_RUNS = 512`
+runs: each block's `(rows × horizon)` matrix is compounded into that
+block's terminal values and discarded before the next block is drawn,
+so the peak footprint is O(`BLOCK_RUNS` × horizon) regardless of the
+run count — one 512 × 2,520 float64 block at the horizon cap is about
+10 MB — where a whole matrix at both caps (20,000 × 2,520) would put
+over a gigabyte across the draw matrix and its compounding
+temporaries. Blockwise drawing changes no result digit: NumPy's
+generator fills arrays in row-major order and consumes the PCG64
+stream value by value for both `integers` and `normal`, so drawing
+the same rows across consecutive block calls yields the same numbers
+in the same positions as one whole-matrix call. The tests assert this
+digit for digit against an inline whole-matrix reference
+implementation at run counts below, at, and across block boundaries,
+and the pinned report values elsewhere in the test suite span a block
+boundary themselves.
+
 ### The two modes, and when each misleads
 
 **Bootstrap** resamples the portfolio's historical daily returns

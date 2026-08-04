@@ -11,6 +11,12 @@ The seed is a required argument on purpose: an unseeded simulation
 cannot be reproduced, so its numbers cannot be checked, and a number
 that cannot be checked does not ship.
 
+The draws are never materialized as one ``runs x horizon`` matrix:
+both modes draw and compound in blocks of at most :data:`BLOCK_RUNS`
+runs, so the peak footprint is fixed by the block size and the horizon
+cap while the results stay digit-for-digit identical to a whole-matrix
+draw for the same seed — the tests assert both.
+
 A simulated distribution is not a forecast. Both modes assume the
 future resembles the sampled history; the docstrings below state when
 each assumption misleads, and the numbers always describe the
@@ -19,7 +25,7 @@ assumption, not the world.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -35,11 +41,21 @@ MIN_RUNS = 100
 MAX_RUNS = 20_000
 
 #: Horizons are trading days, at least one and at most ten trading
-#: years. The cap bounds the ``runs x horizon`` draw matrix and keeps a
+#: years. The cap bounds the width of every draw block and keeps a
 #: typo (a calendar-year count, a milliseconds value) from silently
-#: allocating gigabytes.
+#: inflating each block by orders of magnitude.
 MIN_HORIZON_DAYS = 1
 MAX_HORIZON_DAYS = 2_520
+
+#: Draws are processed in blocks of at most this many runs: each block
+#: materializes its own ``(rows, horizon)`` draw matrix, is compounded
+#: into that block's terminal values, and is discarded before the next
+#: block is drawn. The peak footprint is therefore
+#: O(``BLOCK_RUNS`` x horizon) regardless of ``runs`` — at the horizon
+#: cap, one 512 x 2,520 float64 matrix is about 10 MB — where a whole
+#: ``runs x horizon`` matrix at both caps would put over a gigabyte
+#: across the draw matrix and its compounding temporaries.
+BLOCK_RUNS = 512
 
 _PERCENTILE_LEVELS = (5.0, 25.0, 50.0, 75.0, 95.0)
 
@@ -102,6 +118,45 @@ def _validate_arguments(horizon_days: int, runs: int, seed: int) -> None:
         raise ValueError(f"runs must be between {MIN_RUNS} and {MAX_RUNS}")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("seed must be an integer")
+
+
+def _block_row_counts(runs: int) -> tuple[int, ...]:
+    """Row counts of the draw blocks covering ``runs`` rows.
+
+    Full blocks of :data:`BLOCK_RUNS` rows first, then the remainder if
+    any, so the peak allocation is reached in the first block and never
+    exceeded, and the counts always sum to exactly ``runs``.
+    """
+
+    full_blocks, remainder = divmod(runs, BLOCK_RUNS)
+    return (BLOCK_RUNS,) * full_blocks + ((remainder,) if remainder else ())
+
+
+def _compound_in_blocks(
+    runs: int, draw_block: Callable[[int], npt.NDArray[np.float64]]
+) -> npt.NDArray[np.float64]:
+    """Terminal values of ``runs`` runs, drawn and compounded per block.
+
+    ``draw_block(rows)`` returns the next ``(rows, horizon)`` matrix of
+    daily returns; each block is compounded into its runs' terminal
+    values and released before the next call, so only one block's
+    matrix (and its compounding temporary) is ever alive.
+
+    Blockwise drawing is stream-identical to one whole-matrix call:
+    NumPy's ``Generator`` fills arrays in C (row-major) order and both
+    ``integers`` and ``normal`` consume the underlying PCG64 stream
+    value by value, so drawing the same rows across consecutive calls
+    yields the same numbers in the same positions. The tests assert
+    this digit for digit against an inline whole-matrix reference, so
+    a regression cannot land silently.
+    """
+
+    terminal = np.empty(runs, dtype=np.float64)
+    start = 0
+    for rows in _block_row_counts(runs):
+        terminal[start : start + rows] = np.prod(1.0 + draw_block(rows), axis=1)
+        start += rows
+    return terminal
 
 
 def _historical_returns(
@@ -167,8 +222,12 @@ def run_bootstrap(
     # nothing security-sensitive, and the same seed must reproduce the
     # same result number for number.
     rng = np.random.default_rng(seed)
-    indices = rng.integers(0, len(returns), size=(runs, horizon_days))
-    terminal = np.prod(1.0 + returns[indices], axis=1)
+
+    def draw_block(rows: int) -> npt.NDArray[np.float64]:
+        indices = rng.integers(0, len(returns), size=(rows, horizon_days))
+        return returns[indices]
+
+    terminal = _compound_in_blocks(runs, draw_block)
     return _summarize("bootstrap", seed, horizon_days, terminal)
 
 
@@ -201,6 +260,9 @@ def run_parametric_normal(
     stddev = float(np.std(returns, ddof=1))
     # Same seeding discipline as the bootstrap above.
     rng = np.random.default_rng(seed)
-    draws = rng.normal(loc=mean, scale=stddev, size=(runs, horizon_days))
-    terminal = np.prod(1.0 + draws, axis=1)
+
+    def draw_block(rows: int) -> npt.NDArray[np.float64]:
+        return rng.normal(loc=mean, scale=stddev, size=(rows, horizon_days))
+
+    terminal = _compound_in_blocks(runs, draw_block)
     return _summarize("parametric_normal", seed, horizon_days, terminal)

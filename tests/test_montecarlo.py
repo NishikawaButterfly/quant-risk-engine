@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import math
+import tracemalloc
 import unittest
 from collections.abc import Sequence
+from unittest import mock
 
+import numpy as np
+
+from quantrisk import montecarlo
 from quantrisk.montecarlo import (
+    BLOCK_RUNS,
     MAX_HORIZON_DAYS,
     MAX_RUNS,
     MIN_RUNS,
     MonteCarloResult,
+    _block_row_counts,
     run_bootstrap,
     run_parametric_normal,
 )
@@ -173,6 +180,126 @@ class SummaryTests(unittest.TestCase):
         self.assertLessEqual(reported.p25, reported.p50)
         self.assertLessEqual(reported.p50, reported.p75)
         self.assertLessEqual(reported.p75, reported.p95)
+
+
+def reference_bootstrap_terminal_values(
+    horizon_days: int, runs: int, seed: int
+) -> tuple[float, ...]:
+    """The pre-block bootstrap algorithm, kept inline as the reference.
+
+    One generator call materializes the whole ``(runs, horizon)`` index
+    matrix and every run compounds from it — exactly what the engine
+    did before blockwise processing. If drawing per block consumed the
+    PCG64 stream in any other order, comparing against this would fail
+    on the first differing digit.
+    """
+
+    returns = np.array(PORTFOLIO.return_series(SERIES), dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    indices = rng.integers(0, len(returns), size=(runs, horizon_days))
+    terminal = np.prod(1.0 + returns[indices], axis=1)
+    return tuple(float(value) for value in np.sort(terminal))
+
+
+def reference_parametric_terminal_values(
+    horizon_days: int, runs: int, seed: int
+) -> tuple[float, ...]:
+    """The pre-block parametric algorithm: one whole draw matrix."""
+
+    returns = np.array(PORTFOLIO.return_series(SERIES), dtype=np.float64)
+    mean = float(np.mean(returns))
+    stddev = float(np.std(returns, ddof=1))
+    rng = np.random.default_rng(seed)
+    draws = rng.normal(loc=mean, scale=stddev, size=(runs, horizon_days))
+    terminal = np.prod(1.0 + draws, axis=1)
+    return tuple(float(value) for value in np.sort(terminal))
+
+
+class BlockProcessingTests(unittest.TestCase):
+    """Draws are processed in bounded blocks, never as one whole matrix."""
+
+    def test_block_size_constant_is_a_bounded_integer(self) -> None:
+        self.assertNotIsInstance(BLOCK_RUNS, bool)
+        self.assertIsInstance(BLOCK_RUNS, int)
+        self.assertGreaterEqual(BLOCK_RUNS, 1)
+        self.assertLess(BLOCK_RUNS, MAX_RUNS)
+
+    def test_block_row_counts_cover_the_runs_in_bounded_blocks(self) -> None:
+        for runs in (1, MIN_RUNS, BLOCK_RUNS - 1, BLOCK_RUNS, BLOCK_RUNS + 1, MAX_RUNS):
+            with self.subTest(runs=runs):
+                counts = _block_row_counts(runs)
+                self.assertEqual(sum(counts), runs)
+                self.assertTrue(all(1 <= rows <= BLOCK_RUNS for rows in counts))
+                # Every block except possibly the last is full, so the
+                # peak footprint never exceeds one BLOCK_RUNS-row matrix.
+                self.assertTrue(all(rows == BLOCK_RUNS for rows in counts[:-1]))
+
+    def test_both_engines_route_their_draws_through_the_block_iterator(self) -> None:
+        requested: list[int] = []
+        original = montecarlo._block_row_counts
+
+        def recording(runs: int) -> tuple[int, ...]:
+            requested.append(runs)
+            return original(runs)
+
+        with mock.patch.object(montecarlo, "_block_row_counts", recording):
+            run_bootstrap(PORTFOLIO, SERIES, horizon_days=5, runs=BLOCK_RUNS + 1, seed=1)
+            run_parametric_normal(PORTFOLIO, SERIES, horizon_days=5, runs=BLOCK_RUNS + 1, seed=1)
+        self.assertEqual(requested, [BLOCK_RUNS + 1, BLOCK_RUNS + 1])
+
+    def test_peak_draw_footprint_stays_below_one_whole_matrix(self) -> None:
+        # A run large enough that the whole-matrix path would allocate
+        # several multiples of ``whole_matrix_bytes`` (the index matrix,
+        # the gathered returns, and the compounding temporary), while
+        # the blockwise path stays well below a single one. NumPy
+        # registers its buffer allocations with tracemalloc, so the
+        # traced peak sees the draw matrices.
+        runs, horizon = 4096, 252
+        whole_matrix_bytes = runs * horizon * 8
+        for run in (run_bootstrap, run_parametric_normal):
+            with self.subTest(mode=run.__name__):
+                run(PORTFOLIO, SERIES, horizon_days=horizon, runs=MIN_RUNS, seed=9)  # warm-up
+                tracemalloc.start()
+                try:
+                    run(PORTFOLIO, SERIES, horizon_days=horizon, runs=runs, seed=9)
+                    peak = tracemalloc.get_traced_memory()[1]
+                finally:
+                    tracemalloc.stop()
+                self.assertLess(peak, whole_matrix_bytes)
+
+
+class StreamIdentityTests(unittest.TestCase):
+    """Blockwise drawing reproduces the whole-matrix draw digit for digit.
+
+    The run counts cover a single partial block, exactly one full
+    block, the first boundary crossing, and two full blocks plus a
+    remainder — if any block boundary perturbed the PCG64 stream or
+    the compounding, at least one of these would differ.
+    """
+
+    HORIZON = 7
+
+    def test_bootstrap_is_identical_to_the_whole_matrix_reference(self) -> None:
+        for runs in (MIN_RUNS, BLOCK_RUNS, BLOCK_RUNS + 1, 2 * BLOCK_RUNS + 37):
+            with self.subTest(runs=runs):
+                result = run_bootstrap(
+                    PORTFOLIO, SERIES, horizon_days=self.HORIZON, runs=runs, seed=2026
+                )
+                self.assertEqual(
+                    result.terminal_values,
+                    reference_bootstrap_terminal_values(self.HORIZON, runs, 2026),
+                )
+
+    def test_parametric_is_identical_to_the_whole_matrix_reference(self) -> None:
+        for runs in (MIN_RUNS, BLOCK_RUNS, BLOCK_RUNS + 1, 2 * BLOCK_RUNS + 37):
+            with self.subTest(runs=runs):
+                result = run_parametric_normal(
+                    PORTFOLIO, SERIES, horizon_days=self.HORIZON, runs=runs, seed=2026
+                )
+                self.assertEqual(
+                    result.terminal_values,
+                    reference_parametric_terminal_values(self.HORIZON, runs, 2026),
+                )
 
 
 class ValidationTests(unittest.TestCase):
