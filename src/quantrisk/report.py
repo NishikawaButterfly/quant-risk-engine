@@ -283,6 +283,7 @@ def results_payload(evaluation: SpecEvaluation) -> dict[str, Any]:
             "terminal_stddev": simulation.terminal_stddev,
             "terminal_percentiles": asdict(simulation.terminal_percentiles),
             "probability_below_initial": simulation.probability_below_initial,
+            "bankruptcies": simulation.bankruptcies,
             "terminal_values": list(simulation.terminal_values),
         }
     return payload
@@ -519,7 +520,8 @@ def _monte_carlo_lines(evaluation: SpecEvaluation) -> list[str]:
         f"The mean terminal value is {_factor(simulation.terminal_mean)} with a "
         f"standard deviation of {_factor(simulation.terminal_stddev)}, and "
         f"{_percent(simulation.probability_below_initial)} of runs finished below "
-        "the initial value."
+        f"the initial value. {simulation.bankruptcies} runs were absorbed at "
+        "exactly zero by a daily return at or below -100%."
     )
     return lines
 

@@ -66,8 +66,10 @@ directory:
 - `results.json` — every computed number: per-asset and portfolio
   metrics with risk contributions, the benchmark comparison, the
   stress results, and the Monte Carlo summary with its seed, run
-  count, and the full sorted terminal values, so any summary figure
-  can be recomputed and checked. The portfolio metrics include the
+  count, the full sorted terminal values, and the `bankruptcies`
+  count of runs absorbed at zero (see the bankruptcy section of
+  [methodology.md](methodology.md)), so any summary figure can be
+  recomputed and checked. The portfolio metrics include the
   covariance matrix's 2-norm `condition_number` (`null` when it is
   infinite) and a `conditioning_warning` that is `null` unless the
   matrix is ill-conditioned — see the numerical-conditioning section
