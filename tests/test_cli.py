@@ -124,6 +124,9 @@ class ResultsJsonTests(SampleRunCase):
         self.assertAlmostEqual(percentiles["p50"], 0.988354557854029, places=12)
         self.assertAlmostEqual(percentiles["p95"], 1.221637079886091, places=12)
         self.assertEqual(simulation["probability_below_initial"], 0.532)
+        # Bootstrap resamples historical returns, which positive prices
+        # bound above -100%, so the count is structurally zero here.
+        self.assertEqual(simulation["bankruptcies"], 0)
 
 
 class ReportTests(SampleRunCase):
@@ -161,6 +164,10 @@ class ReportTests(SampleRunCase):
         )
         self.assert_line("| P5 | 0.8087 |")
         self.assert_line("| P50 | 0.9884 |")
+        self.assertIn(
+            "0 runs were absorbed at exactly zero by a daily return at or below -100%.",
+            self.report,
+        )
 
     def test_the_caveats_are_present(self) -> None:
         self.assertIn("- This is not a prediction tool.", self.report)

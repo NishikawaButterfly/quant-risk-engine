@@ -841,12 +841,59 @@ deviation. It fails exactly as the parametric VaR section above warns:
 daily equity returns have fatter tails than a normal distribution, so
 the simulated extremes are too mild and the tail percentiles
 understate risk precisely where they matter. The normal's unbounded
-support can also produce a daily draw below −100%, which no real
-asset return can. Treat this mode as a smooth cross-check on the
-bootstrap, never a replacement.
+support can also produce a daily draw at or below −100%, which no
+real asset return can; the bankruptcy rule below defines what happens
+then. Treat this mode as a smooth cross-check on the bootstrap, never
+a replacement.
 
 Neither mode forecasts anything: both assume the future resembles the
 sampled history, and the outputs describe that assumption.
+
+### Bankruptcy: absorption at zero
+
+A daily return at or below −100% takes a run's compounded value to
+zero (at exactly −100%) or through it (below). Without a policy the
+plain product keeps multiplying: one such draw flips the terminal
+value negative, and a second flips it back to a plausible-looking
+positive number — a run that went bankrupt mid-path would report a
+healthy terminal that no sign check on the output could catch.
+
+The policy is absorption. Bankruptcy is an absorbing state: a
+portfolio worth zero has nothing left to compound, so once any daily
+factor `1 + r` is ≤ 0 the run's terminal value is exactly 0.0, no
+matter what the later draws show. Because only terminal values are
+reported, the implemented rule — any factor ≤ 0 in a run's row forces
+that run's terminal to 0.0 — is equivalent to clamping the cumulative
+value path at its first touch of zero: a row of all-positive factors
+never touches zero and keeps its plain product, and a row with any
+nonpositive factor is worth 0.0 from that day on regardless of what
+follows.
+
+Absorbed runs stay in the distribution: their zeros enter the mean,
+the standard deviation, the percentiles, and the probability of
+finishing below the initial value, and the result reports how many
+runs were absorbed as `bankruptcies`. The count is carried explicitly
+rather than recovered by counting zero terminals, because a long
+product of tiny positive factors can underflow to 0.0 without any
+draw having crossed −100%.
+
+Reachability follows the fitted sigma. Only the parametric mode can
+go bankrupt: the bootstrap redraws historical returns, and since a
+price series must have strictly positive prices, every historical
+return exceeds −100% — its `bankruptcies` is always 0, and the tests
+assert it. For the sample data's fitted daily sigma (about 0.8%), a
+−100% draw sits beyond 120 standard deviations and never occurs. For
+a violently volatile fitted history it becomes real: at a daily sigma
+of 0.25, roughly 3 × 10⁻⁵ of draws cross, which at the run and
+horizon caps means over a thousand absorbed runs.
+
+Seeded results are unchanged wherever no draw reaches −100%: the
+policy consumes the generator stream identically and leaves every
+surviving run's arithmetic untouched, so those terminal values remain
+digit-for-digit what they were before the rule existed. The tests
+assert the absorbed-versus-surviving split against a whole-matrix
+reference, the exact −100% boundary, and the even-count sign-flip
+case.
 
 ### Percentile method
 
