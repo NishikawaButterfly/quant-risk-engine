@@ -305,6 +305,13 @@ class PolicyWindowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ISO|canonical"):
             PolicyWindow("2026-01-06", ("AAA",), ("2026-1-05",), ((100.0,),))
 
+    def test_window_date_errors_name_the_window(self) -> None:
+        # A malformed date must be traceable to the window that holds
+        # it: the message names the window by its decision date along
+        # with the offending value.
+        with self.assertRaisesRegex(ValueError, r"policy window for 2026-01-06.*'2026-1-05'"):
+            PolicyWindow("2026-01-06", ("AAA",), ("2026-1-05",), ((100.0,),))
+
 
 class PropertyTests(unittest.TestCase):
     def test_constant_prices_and_zero_cost_preserve_value_exactly(self) -> None:
@@ -392,6 +399,34 @@ class PropertyTests(unittest.TestCase):
         )
         self.assertEqual(result.values.prices[:3], (1000.0, 1000.0, 1000.0))
         self.assertEqual(result.rebalances[0].date, DATES_8[3])
+
+    def test_a_monday_decision_sees_friday_as_the_previous_session(self) -> None:
+        # DATES_7 spans the weekend between Friday 2026-01-09 (index 4)
+        # and Monday 2026-01-12 (index 5). With five warmup sessions the
+        # first decision falls on the Monday and its window ends on the
+        # Friday: adjacent sessions under the session model, three
+        # calendar days apart on the calendar.
+        policy = RecordingEqualWeights(min_history_days=5)
+        flat_a = PriceSeries("AAA", DATES_7, (100.0,) * 7)
+        flat_b = PriceSeries("BBB", DATES_7, (50.0,) * 7)
+        result = run_backtest(
+            (flat_a, flat_b), policy, schedule=2, cost_rate=0.0, initial_value=1000.0
+        )
+        self.assertEqual(result.rebalances[0].date, "2026-01-12")
+        self.assertEqual(policy.windows[0].dates[-1], "2026-01-09")
+
+    def test_annualization_counts_sessions_not_calendar_days(self) -> None:
+        # DATES_7 covers nine calendar days but seven sessions; the
+        # annualized return compounds over the six session returns,
+        # never over the calendar span.
+        asset = PriceSeries("AAA", DATES_7, (100.0, 101.0, 103.0, 102.0, 104.0, 103.0, 106.0))
+        result = run_backtest(
+            (asset,), ConstantWeights((1.0,)), schedule=1, cost_rate=0.0, initial_value=1000.0
+        )
+        self.assertEqual(
+            result.annualized_return,
+            (1.0 + result.total_return) ** (252 / 6) - 1.0,
+        )
 
     def test_result_metrics_reuse_the_metrics_module_on_the_value_path(self) -> None:
         result = run_backtest(

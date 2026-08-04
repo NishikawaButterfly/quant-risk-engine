@@ -57,6 +57,14 @@ class WindowValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             StressWindow(name="sloppy", start="06/01/2026", end="2026-01-09")
 
+    def test_malformed_window_dates_name_the_window(self) -> None:
+        # The rejection identifies the owning window and the offending
+        # value, whichever bound is malformed.
+        with self.assertRaisesRegex(ValueError, r"stress window 'sloppy'.*'2026-13-01'"):
+            StressWindow(name="sloppy", start="2026-13-01", end="2026-02-01")
+        with self.assertRaisesRegex(ValueError, r"stress window 'sloppy'.*'2026-1-06'"):
+            StressWindow(name="sloppy", start="2026-01-01", end="2026-1-06")
+
     def test_blank_name_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             StressWindow(name="  ", start="2026-01-06", end="2026-01-09")

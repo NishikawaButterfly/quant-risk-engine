@@ -2,10 +2,13 @@
 
 Every metric is a small pure function over a sequence of periodic
 (daily) returns, or over a :class:`~quantrisk.series.PriceSeries` when
-the metric needs the price path itself. The conventions — annualization
-factor, denominators, percentile method, sign of a VaR — are stated in
-``docs/methodology.md`` next to a hand-worked example whose digits the
-test suite asserts.
+the metric needs the price path itself. A "day" here is a trading
+session in the sense of the session model (``docs/methodology.md``):
+one return per pair of consecutive rows, annualized by session counts,
+with the calendar spacing of the underlying dates playing no role. The
+conventions — annualization factor, denominators, percentile method,
+sign of a VaR — are stated in ``docs/methodology.md`` next to a
+hand-worked example whose digits the test suite asserts.
 
 Every number entering a metric — each return, the risk-free rate, the
 Sortino target, the confidence level — passes the engine's shared
@@ -24,8 +27,10 @@ from scipy.stats import norm
 from quantrisk._validation import require_finite_number, require_finite_numbers
 from quantrisk.series import PriceSeries
 
-#: Annualization convention: 252 trading days per year. Volatility
-#: scales with the square root of time, mean returns scale linearly.
+#: Annualization convention: 252 trading sessions per year. The factor
+#: counts sessions — rows of a price series — never calendar days: see
+#: the session model in ``docs/methodology.md``. Volatility scales with
+#: the square root of time, mean returns scale linearly.
 TRADING_DAYS_PER_YEAR = 252
 
 #: A sample standard deviation needs at least two observations.
@@ -58,7 +63,9 @@ def _sample_stddev(values: tuple[float, ...]) -> float:
 def annualized_volatility(returns: Sequence[float]) -> float:
     """Sample standard deviation of periodic returns times sqrt(252).
 
-    The denominator is ``n - 1`` (sample, not population).
+    The denominator is ``n - 1`` (sample, not population). The 252
+    annualizes session counts: every return is one session, however
+    many calendar days its two observations spanned.
     """
 
     values = _validate_returns(returns)
@@ -110,6 +117,12 @@ class Drawdown:
     ``depth`` is a nonnegative fraction: 0.04 means 4% below the peak.
     When the series never declines, ``depth`` is zero and both dates are
     the first date of the series.
+
+    The dates are session labels under the session model
+    (``docs/methodology.md``): the drawdown's duration is the number of
+    sessions between them, and the calendar span they suggest can be
+    longer, because weekends and holidays between the two dates are not
+    sessions and no return accrued across them.
     """
 
     depth: float

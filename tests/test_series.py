@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import unittest
 
+from quantrisk.metrics import annualized_volatility
 from quantrisk.series import MIN_PRICES, PriceSeries, align
 
 DATES = ("2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09", "2026-01-12")
@@ -37,6 +38,15 @@ class PriceSeriesValidationTests(unittest.TestCase):
         for bad in ("2026-1-05", "not-a-date", "2026-13-01", "20260105", "2026-01-05T00:00"):
             with self.assertRaisesRegex(ValueError, "ISO|canonical"):
                 PriceSeries("AAA", (bad, "2026-01-06", "2026-01-07"), (1.0, 2.0, 3.0))
+
+    def test_malformed_date_errors_name_the_series_and_the_date(self) -> None:
+        # A rejection must identify both the owning series and the
+        # offending value: in a multi-series file, "date '2026-13-01'
+        # is malformed" without the series name is a hunt.
+        with self.assertRaisesRegex(ValueError, r"series 'AAA'.*'2026-13-01'"):
+            PriceSeries("AAA", ("2026-13-01", "2026-01-06", "2026-01-07"), (1.0, 2.0, 3.0))
+        with self.assertRaisesRegex(ValueError, r"series 'BBB'.*'2026-1-05'"):
+            PriceSeries("BBB", ("2026-1-05", "2026-01-06", "2026-01-07"), (1.0, 2.0, 3.0))
 
     def test_unsorted_and_duplicate_dates_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
@@ -75,6 +85,57 @@ class ReturnTests(unittest.TestCase):
         series = make_series()
         total = sum(series.log_returns())
         self.assertAlmostEqual(total, math.log(series.prices[-1] / series.prices[0]), places=12)
+
+
+class SessionModelTests(unittest.TestCase):
+    """Pin the session model of docs/methodology.md.
+
+    Each row is one trading session and consecutive rows are
+    consecutive sessions; the calendar gap between two successive
+    dates carries no information and never enters the arithmetic.
+    """
+
+    def test_weekend_dates_are_accepted(self) -> None:
+        # 2026-01-10 is a Saturday, 2026-01-11 a Sunday. Markets that
+        # trade seven days a week (cryptocurrencies, some futures) are
+        # legal input; under the session model the weekday of a row is
+        # irrelevant, so no weekday check exists.
+        series = PriceSeries(
+            "COIN",
+            ("2026-01-09", "2026-01-10", "2026-01-11", "2026-01-12"),
+            (100.0, 101.0, 99.0, 102.0),
+        )
+        self.assertEqual(len(series), 4)
+
+    def test_a_weekend_gap_is_one_session_with_no_accrual(self) -> None:
+        # Friday 2026-01-09 close to Monday 2026-01-12 close: three
+        # calendar days, exactly one session return, p_mon / p_fri - 1.
+        # Nothing accrues across the weekend.
+        series = PriceSeries(
+            "AAA", ("2026-01-08", "2026-01-09", "2026-01-12"), (100.0, 104.0, 91.0)
+        )
+        returns = series.simple_returns()
+        self.assertEqual(len(returns), 2)
+        self.assertEqual(returns[1], 91.0 / 104.0 - 1.0)
+
+    def test_returns_and_annualization_are_calendar_invariant(self) -> None:
+        # The same prices on a gapless grid and on a grid with weekend
+        # and holiday gaps produce identical returns and identical
+        # annualized volatility: dates label the sessions, and the 252
+        # convention annualizes session counts, not calendar days.
+        prices = (100.0, 102.0, 99.0, 101.0)
+        gapless = PriceSeries(
+            "AAA", ("2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"), prices
+        )
+        gapped = PriceSeries(
+            "AAA", ("2026-01-09", "2026-01-12", "2026-01-20", "2026-02-02"), prices
+        )
+        self.assertEqual(gapless.simple_returns(), gapped.simple_returns())
+        self.assertEqual(gapless.log_returns(), gapped.log_returns())
+        self.assertEqual(
+            annualized_volatility(gapless.simple_returns()),
+            annualized_volatility(gapped.simple_returns()),
+        )
 
 
 class AlignTests(unittest.TestCase):

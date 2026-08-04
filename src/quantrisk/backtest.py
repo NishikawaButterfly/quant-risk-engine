@@ -68,6 +68,11 @@ class PolicyWindow:
     Construction re-checks the invariant and rejects any history that
     touches or passes its own decision date.
 
+    Dates are session labels under the session model
+    (``docs/methodology.md``): "strictly before the decision date"
+    means earlier sessions, and the window's last date is the session
+    immediately preceding the decision — a Friday before a Monday
+    decision is one session back, not three days of missing data.
     ``prices[i]`` is the price history of ``names[i]`` on ``dates``,
     taken verbatim from series already validated by
     :class:`~quantrisk.series.PriceSeries`. A directly constructed
@@ -92,7 +97,8 @@ class PolicyWindow:
             )
         if not self.dates:
             raise ValueError("a policy window needs at least one observed day")
-        parsed = [_parse_iso_date(text) for text in (*self.dates, self.decision_date)]
+        owner = f"policy window for {self.decision_date}"
+        parsed = [_parse_iso_date(text, owner) for text in (*self.dates, self.decision_date)]
         for previous, current in pairwise(parsed):
             if current <= previous:
                 raise ValueError(
@@ -244,10 +250,12 @@ def run_backtest(
 ) -> BacktestResult:
     """Walk a weight policy forward through the aligned series.
 
-    ``schedule`` is the rebalancing interval in trading days: the
-    first decision falls on the first day with
-    ``policy.min_history_days`` observed days behind it, and further
-    decisions come every ``schedule`` trading days after that. Days
+    ``schedule`` is the rebalancing interval in trading sessions —
+    rows of the aligned grid, never calendar days (the session model
+    of ``docs/methodology.md``), so a weekend between two rows does
+    not stretch the interval. The first decision falls on the first
+    day with ``policy.min_history_days`` observed days behind it, and
+    further decisions come every ``schedule`` sessions after that. Days
     before the first decision are held in cash, which earns exactly
     zero in this version. Between decisions the portfolio is
     buy-and-hold — weights drift with prices — and at each decision
