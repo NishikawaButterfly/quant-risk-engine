@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from unittest import mock
 
 import numpy as np
+import numpy.typing as npt
 
 from quantrisk import montecarlo
 from quantrisk.montecarlo import (
@@ -54,6 +55,18 @@ PORTFOLIO = Portfolio(names=("AAA", "BBB"), weights=(0.6, 0.4))
 DOUBLING_A = PriceSeries(name="AAA", dates=DATES[:4], prices=(100.0, 200.0, 400.0, 800.0))
 DOUBLING_B = PriceSeries(name="BBB", dates=DATES[:4], prices=(50.0, 100.0, 200.0, 400.0))
 
+# A one-day collapse to 1% of value followed by a full recovery. The
+# returns are (-0.99, +99.0), so the parametric fit is
+# N(49.005, 70.7036...) and each daily draw lands at or below -100%
+# with probability ~0.24 — bankruptcy is frequent for any seed, not a
+# tail accident, which makes the absorption policy testable
+# deterministically. The prices are still strictly positive, so the
+# historical returns themselves all exceed -100%.
+VOLATILE_A = PriceSeries(name="AAA", dates=DATES[:3], prices=(100.0, 1.0, 100.0))
+VOLATILE_B = PriceSeries(name="BBB", dates=DATES[:3], prices=(50.0, 0.5, 50.0))
+VOLATILE = (VOLATILE_A, VOLATILE_B)
+VOLATILE_PORTFOLIO = Portfolio(names=("AAA", "BBB"), weights=(0.5, 0.5))
+
 
 def interpolated_percentile(sorted_values: tuple[float, ...], level: float) -> float:
     """The documented convention, recomputed independently of the engine."""
@@ -74,6 +87,7 @@ class DeterminismTests(unittest.TestCase):
         self.assertEqual(first.terminal_mean, second.terminal_mean)
         self.assertEqual(first.terminal_stddev, second.terminal_stddev)
         self.assertEqual(first.probability_below_initial, second.probability_below_initial)
+        self.assertEqual(first.bankruptcies, second.bankruptcies)
 
     def test_bootstrap_same_seed_reproduces_every_number(self) -> None:
         first = run_bootstrap(PORTFOLIO, SERIES, horizon_days=63, runs=500, seed=2026)
@@ -300,6 +314,135 @@ class StreamIdentityTests(unittest.TestCase):
                     result.terminal_values,
                     reference_parametric_terminal_values(self.HORIZON, runs, 2026),
                 )
+
+
+class BankruptcyTests(unittest.TestCase):
+    """A run whose value path touches zero is absorbed at 0.0 and counted.
+
+    A parametric normal draw at or below -100% takes the compounded
+    value through zero: without a policy, one such draw flips the
+    terminal negative, and an even number of them flips it back to a
+    plausible-looking positive number. The policy is absorption — once
+    the path touches zero the run is worth exactly 0.0 forever — and
+    every absorbed run is counted on the result.
+    """
+
+    HORIZON = 3
+    RUNS = 100
+    SEED = 2026
+
+    def volatile_reference(self) -> npt.NDArray[np.float64]:
+        """The whole draw matrix the engine's seed produces, redrawn inline."""
+
+        returns = np.array(VOLATILE_PORTFOLIO.return_series(VOLATILE), dtype=np.float64)
+        rng = np.random.default_rng(self.SEED)
+        return rng.normal(
+            loc=float(np.mean(returns)),
+            scale=float(np.std(returns, ddof=1)),
+            size=(self.RUNS, self.HORIZON),
+        )
+
+    def test_parametric_runs_that_cross_minus_one_absorb_at_zero_and_are_counted(self) -> None:
+        result = run_parametric_normal(
+            VOLATILE_PORTFOLIO, VOLATILE, horizon_days=self.HORIZON, runs=self.RUNS, seed=self.SEED
+        )
+        factors = 1.0 + self.volatile_reference()
+        bankrupt = np.any(factors <= 0.0, axis=1)
+        self.assertGreater(int(np.count_nonzero(bankrupt)), 0)
+        self.assertEqual(result.bankruptcies, int(np.count_nonzero(bankrupt)))
+        # No terminal value is negative, and every absorbed run is
+        # exactly 0.0 — the sorted array starts with one 0.0 per
+        # bankruptcy and nothing else reaches zero.
+        self.assertGreaterEqual(result.terminal_values[0], 0.0)
+        self.assertEqual(
+            result.terminal_values[: result.bankruptcies], (0.0,) * result.bankruptcies
+        )
+        self.assertGreater(result.terminal_values[result.bankruptcies], 0.0)
+        # A run worth 0.0 finished below the initial value.
+        self.assertGreaterEqual(
+            result.probability_below_initial, result.bankruptcies / result.runs
+        )
+
+    def test_surviving_runs_are_bit_identical_to_the_naive_product(self) -> None:
+        # Absorption must not perturb the generator stream or the
+        # surviving runs' arithmetic: every non-bankrupt run compounds
+        # to exactly the number the pre-policy whole-matrix product
+        # gave, digit for digit.
+        result = run_parametric_normal(
+            VOLATILE_PORTFOLIO, VOLATILE, horizon_days=self.HORIZON, runs=self.RUNS, seed=self.SEED
+        )
+        factors = 1.0 + self.volatile_reference()
+        bankrupt = np.any(factors <= 0.0, axis=1)
+        expected = np.prod(factors, axis=1)
+        expected[bankrupt] = 0.0
+        self.assertEqual(
+            result.terminal_values,
+            tuple(float(value) for value in np.sort(expected)),
+        )
+
+    def test_the_fixture_exercises_the_sign_flipped_positive_case(self) -> None:
+        # The dangerous case is a row with an even number (>= 2) of
+        # nonpositive factors: its naive product is POSITIVE, so no
+        # sign check on the terminal could catch it. Assert the fixture
+        # actually contains such rows, so the tests above genuinely
+        # cover the through-zero-and-back path.
+        factors = 1.0 + self.volatile_reference()
+        nonpositive_counts = np.count_nonzero(factors <= 0.0, axis=1)
+        even_bankrupt = (nonpositive_counts > 0) & (nonpositive_counts % 2 == 0)
+        self.assertGreater(int(np.count_nonzero(even_bankrupt)), 0)
+        naive = np.prod(factors, axis=1)
+        self.assertTrue(bool(np.all(naive[even_bankrupt] > 0.0)))
+
+    def test_a_draw_of_exactly_minus_one_hundred_percent_is_absorbed(self) -> None:
+        # The boundary: r = -1.0 makes the factor exactly 0.0 — the
+        # value path touches zero without crossing it, and that is
+        # already bankruptcy. Injected through the draw_block seam so
+        # the boundary value is exact, not a random draw's neighbour.
+        rows = np.array(
+            [
+                [-1.0, 0.5],  # touches zero exactly, then a gain: absorbed
+                [0.5, 0.5],  # survives: 1.5 * 1.5 = 2.25 exactly
+                [-1.5, -1.5],  # crosses zero twice: naive product +0.25
+            ],
+            dtype=np.float64,
+        )
+
+        def draw_block(count: int) -> npt.NDArray[np.float64]:
+            self.assertEqual(count, len(rows))
+            return rows
+
+        terminal, bankruptcies = montecarlo._compound_in_blocks(len(rows), draw_block)
+        self.assertEqual(list(terminal), [0.0, 2.25, 0.0])
+        self.assertEqual(bankruptcies, 2)
+
+    def test_seeded_results_without_any_bankruptcy_are_unchanged(self) -> None:
+        # The hand-worked fixture's fitted sigma is a fraction of a
+        # percent, so no draw comes near -100%: the count is zero and
+        # the terminal values still match the whole-matrix reference
+        # digit for digit (StreamIdentityTests pins the values; this
+        # pins the count).
+        parametric = run_parametric_normal(PORTFOLIO, SERIES, horizon_days=63, runs=500, seed=2026)
+        self.assertEqual(parametric.bankruptcies, 0)
+        self.assertEqual(
+            parametric.terminal_values[: parametric.runs],
+            reference_parametric_terminal_values(63, 500, 2026),
+        )
+
+    def test_bootstrap_resamples_only_returns_above_minus_one(self) -> None:
+        # PriceSeries requires strictly positive prices, so every
+        # historical return exceeds -100% by construction — even in
+        # the volatile fixture with its -99% day — and a bootstrap can
+        # only ever redraw those values.
+        for series, portfolio in ((SERIES, PORTFOLIO), (VOLATILE, VOLATILE_PORTFOLIO)):
+            for value in portfolio.return_series(series):
+                self.assertGreater(value, -1.0)
+
+    def test_bootstrap_bankruptcies_are_always_zero(self) -> None:
+        for series, portfolio in ((SERIES, PORTFOLIO), (VOLATILE, VOLATILE_PORTFOLIO)):
+            with self.subTest(fixture=series[0].prices):
+                result = run_bootstrap(portfolio, series, horizon_days=21, runs=200, seed=5)
+                self.assertEqual(result.bankruptcies, 0)
+                self.assertGreater(result.terminal_values[0], 0.0)
 
 
 class ValidationTests(unittest.TestCase):

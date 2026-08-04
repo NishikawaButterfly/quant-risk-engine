@@ -17,6 +17,13 @@ runs, so the peak footprint is fixed by the block size and the horizon
 cap while the results stay digit-for-digit identical to a whole-matrix
 draw for the same seed — the tests assert both.
 
+A daily draw at or below -100% — reachable only in the parametric
+mode, whose normal has unbounded support — takes a run's value path
+to or through zero. Such a run is absorbed at exactly 0.0 (bankruptcy
+is absorbing: a portfolio worth nothing cannot compound back) and the
+result counts it in :attr:`MonteCarloResult.bankruptcies`. Runs whose
+draws all stay above -100% are untouched, digit for digit.
+
 A simulated distribution is not a forecast. Both modes assume the
 future resembles the sampled history; the docstrings below state when
 each assumption misleads, and the numbers always describe the
@@ -94,6 +101,16 @@ class MonteCarloResult:
     (denominator ``n - 1``), matching the convention used throughout
     :mod:`quantrisk.metrics`; ``probability_below_initial`` is the
     fraction of runs that finish strictly below 1.0.
+
+    ``bankruptcies`` counts the runs absorbed at 0.0 because a daily
+    draw took the value path to or through zero (any draw at or below
+    -100%). Those runs sit at the front of the sorted terminal values
+    as exact zeros and are included in every summary figure; the count
+    is carried explicitly because a terminal 0.0 could in principle
+    also arise from floating-point underflow of a long product of tiny
+    positive factors, so counting zeros after the fact is not the same
+    statement. Bootstrap runs redraw historical returns, which strictly
+    positive prices keep above -100%, so their count is always 0.
     """
 
     mode: SimulationMode
@@ -104,6 +121,7 @@ class MonteCarloResult:
     terminal_stddev: float
     terminal_percentiles: Percentiles
     probability_below_initial: float
+    bankruptcies: int
     terminal_values: tuple[float, ...]
 
 
@@ -134,7 +152,7 @@ def _block_row_counts(runs: int) -> tuple[int, ...]:
 
 def _compound_in_blocks(
     runs: int, draw_block: Callable[[int], npt.NDArray[np.float64]]
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], int]:
     """Terminal values of ``runs`` runs, drawn and compounded per block.
 
     ``draw_block(rows)`` returns the next ``(rows, horizon)`` matrix of
@@ -149,14 +167,40 @@ def _compound_in_blocks(
     yields the same numbers in the same positions. The tests assert
     this digit for digit against an inline whole-matrix reference, so
     a regression cannot land silently.
+
+    Bankruptcy is absorbing: a day's factor ``1 + r`` at or below zero
+    means the value path touched (r = -1 exactly) or crossed (r < -1)
+    zero that day, and a portfolio worth nothing cannot compound back,
+    so the run's terminal value is exactly 0.0 and the run is counted.
+    Because only terminal values are reported, masking whole rows on
+    ``any(factor <= 0)`` is equivalent to clamping a cumulative
+    product at its first nonpositive step: a row with every factor
+    positive never touches zero and keeps its plain ``np.prod`` — the
+    mask assigns nothing, so surviving runs stay bit-identical to the
+    pre-policy result — while a row with any factor <= 0 is absorbed
+    on the day that factor applies, so whatever follows, its terminal
+    is 0.0. The naive product only agrees by accident: a lone zero
+    factor, or an odd count of negative factors (a nonsense negative
+    terminal). An even count of negative factors yields a
+    plausible-looking POSITIVE product that no sign check on the
+    output could catch — which is why the rule tests the factors,
+    never the product. The second returned value is the number of
+    absorbed rows; the draws consumed from the generator are the same
+    in every case.
     """
 
     terminal = np.empty(runs, dtype=np.float64)
+    bankruptcies = 0
     start = 0
     for rows in _block_row_counts(runs):
-        terminal[start : start + rows] = np.prod(1.0 + draw_block(rows), axis=1)
+        factors = 1.0 + draw_block(rows)
+        bankrupt = np.any(factors <= 0.0, axis=1)
+        block_terminal = np.prod(factors, axis=1)
+        block_terminal[bankrupt] = 0.0
+        terminal[start : start + rows] = block_terminal
+        bankruptcies += int(np.count_nonzero(bankrupt))
         start += rows
-    return terminal
+    return terminal, bankruptcies
 
 
 def _historical_returns(
@@ -172,6 +216,7 @@ def _summarize(
     seed: int,
     horizon_days: int,
     terminal: npt.NDArray[np.float64],
+    bankruptcies: int,
 ) -> MonteCarloResult:
     runs = len(terminal)
     ordered = np.sort(terminal)
@@ -185,6 +230,7 @@ def _summarize(
         terminal_stddev=float(np.std(ordered, ddof=1)),
         terminal_percentiles=Percentiles(p5=p5, p25=p25, p50=p50, p75=p75, p95=p95),
         probability_below_initial=float(np.count_nonzero(ordered < 1.0)) / runs,
+        bankruptcies=bankruptcies,
         terminal_values=tuple(float(value) for value in ordered),
     )
 
@@ -214,6 +260,11 @@ def run_bootstrap(
     bootstrap — resampling contiguous runs of days to preserve
     short-range dependence — is future work, and this function does not
     silently approximate it.
+
+    Bankruptcy cannot occur here: :class:`~quantrisk.series.PriceSeries`
+    rejects nonpositive prices, so every historical return exceeds
+    -100%, a bootstrap can only redraw those values, and the result's
+    ``bankruptcies`` count is always 0. The tests assert it.
     """
 
     _validate_arguments(horizon_days, runs, seed)
@@ -227,8 +278,8 @@ def run_bootstrap(
         indices = rng.integers(0, len(returns), size=(rows, horizon_days))
         return returns[indices]
 
-    terminal = _compound_in_blocks(runs, draw_block)
-    return _summarize("bootstrap", seed, horizon_days, terminal)
+    terminal, bankruptcies = _compound_in_blocks(runs, draw_block)
+    return _summarize("bootstrap", seed, horizon_days, terminal, bankruptcies)
 
 
 def run_parametric_normal(
@@ -248,10 +299,17 @@ def run_parametric_normal(
     fails the same way: daily equity returns have fatter tails than a
     normal distribution, so the simulated extremes are too mild and the
     tail percentiles understate risk exactly where they matter most.
-    The normal also has unbounded support, so a draw below -100% —
-    impossible for a real asset — can occur and flip a run's compounded
-    value negative; treat this mode as a smooth cross-check on the
-    bootstrap, not a replacement for it.
+
+    The normal also has unbounded support, so a draw at or below -100%
+    — impossible for a real asset — can occur. Such a run is absorbed:
+    its value path touches or crosses zero, its terminal value is
+    exactly 0.0, and the result counts it in ``bankruptcies``. For a
+    history like the sample data (daily sigma under 1%) the per-draw
+    probability is below 1e-3000 — unobservable — but a caller fitting
+    a violently volatile history can make it material: at a daily
+    sigma of 0.25 about 3e-5 of draws cross, which at the run and
+    horizon caps is over a thousand absorbed runs. Treat this mode as
+    a smooth cross-check on the bootstrap, not a replacement for it.
     """
 
     _validate_arguments(horizon_days, runs, seed)
@@ -264,5 +322,5 @@ def run_parametric_normal(
     def draw_block(rows: int) -> npt.NDArray[np.float64]:
         return rng.normal(loc=mean, scale=stddev, size=(rows, horizon_days))
 
-    terminal = _compound_in_blocks(runs, draw_block)
-    return _summarize("parametric_normal", seed, horizon_days, terminal)
+    terminal, bankruptcies = _compound_in_blocks(runs, draw_block)
+    return _summarize("parametric_normal", seed, horizon_days, terminal, bankruptcies)
