@@ -161,9 +161,13 @@ def evaluate_spec(spec: RunSpec) -> SpecEvaluation:
     comparison: BenchmarkComparison | None = None
     if spec.benchmark is not None and spec.benchmark_series is not None:
         benchmark_metrics = _series_metrics(spec.benchmark, spec.benchmark_series, rate)
+        # The spec's series come out of align() at load time, so the
+        # comparison's own grid check passes by construction; the
+        # comparison still re-derives both return series itself.
         comparison = compare_to_benchmark(
-            spec.portfolio.return_series(spec.asset_series),
-            spec.benchmark_series.simple_returns(),
+            spec.portfolio,
+            spec.asset_series,
+            spec.benchmark_series,
             risk_free_rate_daily=rate / TRADING_DAYS_PER_YEAR,
         )
     return SpecEvaluation(
