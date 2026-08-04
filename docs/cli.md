@@ -120,9 +120,22 @@ directory:
 Both artifacts render from one evaluation, so they cannot disagree,
 and neither embeds a timestamp: the same spec always produces
 byte-identical output, and the test suite asserts that equality.
-Writes are staged next to their targets and published with atomic
-replaces, and an output directory that already holds results is never
-overwritten unless `--force` is passed.
+
+The pair is published atomically as a pair. Both files are staged next
+to their targets, any existing pair is set aside, and only then are
+both promoted with atomic replaces; if anything fails before both
+promotions complete, the staged files are removed and the set-aside
+pair is restored. On any failure the output directory therefore holds
+either the complete new pair or exactly what it held before — never a
+new `results.json` beside an old `report.md`, and never one artifact
+without the other. An output directory that already holds results is
+never overwritten unless `--force` is passed, and a forced run that
+fails restores the previous pair byte for byte. Two edges, stated
+plainly: a process kill in mid-publish can leave hidden `.*.tmp`
+staging or backup files beside the targets, which are safe to delete;
+and if the restore itself also fails (a second, independent
+filesystem error), the command says so and the previous artifacts
+survive as hidden `.*.backup.tmp` files.
 
 ## Conventions the numbers follow
 

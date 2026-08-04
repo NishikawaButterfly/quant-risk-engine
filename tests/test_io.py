@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import quantrisk.io
 from quantrisk.io import SpecFileError, load_spec, write_run_artifacts
 
 CSV = "\n".join(
@@ -366,6 +370,75 @@ class WriteArtifactsTests(unittest.TestCase):
         write_run_artifacts(self.output, "{}\n", "# Report\n")
         leftovers = [path.name for path in self.output.iterdir()]
         self.assertEqual(sorted(leftovers), ["report.md", "results.json"])
+
+
+class AtomicPairPublishTests(unittest.TestCase):
+    """The pair publishes completely or not at all — never a mix (#24)."""
+
+    def setUp(self) -> None:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.output = Path(holder.name) / "results"
+
+    @contextlib.contextmanager
+    def failing_report_promotion(self) -> Iterator[None]:
+        """Fail the atomic replace that would publish ``report.md``."""
+
+        real_replace = Path.replace
+
+        def fail_second_promotion(source: Path, target: str | Path) -> Path:
+            if source.name.endswith(".stage.tmp") and Path(target).name == "report.md":
+                raise OSError("synthetic second-artifact failure")
+            return real_replace(source, target)
+
+        with patch.object(Path, "replace", new=fail_second_promotion):
+            yield
+
+    def read_pair(self) -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in sorted(self.output.iterdir())}
+
+    def test_a_failed_second_promotion_publishes_nothing_into_a_fresh_directory(self) -> None:
+        with (
+            self.failing_report_promotion(),
+            self.assertRaisesRegex(OSError, "second-artifact failure"),
+        ):
+            write_run_artifacts(self.output, "orphan\n", "# never published\n")
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), [])
+
+    def test_a_failed_second_promotion_restores_the_forced_over_pair(self) -> None:
+        write_run_artifacts(self.output, "old results\n", "old report\n")
+        original = self.read_pair()
+        with (
+            self.failing_report_promotion(),
+            self.assertRaisesRegex(OSError, "second-artifact failure"),
+        ):
+            write_run_artifacts(self.output, "new results\n", "new report\n", force=True)
+        self.assertEqual(self.read_pair(), original)
+
+    def test_a_failed_second_staging_leaves_the_original_pair_untouched(self) -> None:
+        write_run_artifacts(self.output, "old results\n", "old report\n")
+        original = self.read_pair()
+        real_stage = quantrisk.io._stage_text
+
+        def fail_report_staging(path: Path, content: str) -> Path:
+            if path.name == "report.md":
+                raise OSError("synthetic staging failure")
+            return real_stage(path, content)
+
+        with (
+            patch("quantrisk.io._stage_text", new=fail_report_staging),
+            self.assertRaisesRegex(OSError, "staging failure"),
+        ):
+            write_run_artifacts(self.output, "new results\n", "new report\n", force=True)
+        self.assertEqual(self.read_pair(), original)
+
+    def test_a_forced_success_leaves_only_the_new_pair(self) -> None:
+        write_run_artifacts(self.output, "old results\n", "old report\n")
+        write_run_artifacts(self.output, "new results\n", "new report\n", force=True)
+        self.assertEqual(
+            self.read_pair(),
+            {"report.md": b"new report\n", "results.json": b"new results\n"},
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
