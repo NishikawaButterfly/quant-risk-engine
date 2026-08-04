@@ -4,8 +4,8 @@ The engine computes risk evidence from series handed to it as Python
 objects. The CLI wraps that in one JSON document — the run spec — so a
 whole portfolio analysis can be described, versioned, and rerun from a
 single file and the price data beside it. `quantrisk run` evaluates a
-spec and writes two artifacts; `quantrisk validate` checks a file
-without computing anything.
+spec and writes two artifacts; `quantrisk validate` proves the same
+spec would evaluate cleanly, without writing anything.
 
 ## The spec document
 
@@ -44,8 +44,43 @@ whole load with the offending field named — for example
 `stress.windows['early']: ... lies outside the aligned grid`. Every
 cross-reference is checked at load time too — tickers against CSV
 columns, the benchmark against the portfolio, every stress scenario
-against the loaded data — so a spec that validates is a spec that
-runs. A spec either loads completely or not at all.
+against the loaded data. A spec either loads completely or not at all.
+
+## Validation implies runnability
+
+A spec accepted by `validate` will run: `quantrisk run` on the same
+spec and price data cannot fail evaluation. Both commands prove it the
+same way — after loading, they hand the spec to one shared feasibility
+check that evaluates it through the run's own code paths, serializes
+the payload under the run's own no-non-finite-numbers rule, renders
+the report, and discards everything. A spec that is well formed but
+unevaluable — a constant series with no Sharpe ratio, a benchmark grid
+too short for three paired returns, a short position driving the
+compounded value path to zero, a price ratio overflowing the float
+range — now fails `validate` with exactly the message `run` would have
+produced, for example `spec cannot be evaluated: Sharpe ratio is
+undefined for constant returns`.
+
+The Monte Carlo block is the one part not always re-executed: for a
+bootstrap request a cheap arithmetic bound usually proves the
+simulation cannot produce a non-finite figure (every draw is a
+historical return, so the terminals are bounded by
+`(1 + max return) ^ horizon`), and only when that bound is
+inconclusive — or for the parametric mode, whose normal draws are
+unbounded — does `validate` run the seeded simulation itself, which
+its input caps keep to seconds at worst. Simulated bankruptcies do not
+threaten the guarantee either way: a path absorbed at zero is a
+counted result, not an error.
+
+The guarantee's limits, stated plainly: it covers evaluation and
+rendering, not publication. `quantrisk run` can still fail *writing*
+its artifacts — an output directory that already holds results and no
+`--force`, a full disk, a permissions error — and it can fail if the
+spec or CSV files change between the two invocations. Validation
+proves the spec evaluable, not the filesystem writable. The test suite
+holds the property itself under a seeded sweep of adversarial specs:
+every generated spec is either rejected by `validate` or run to
+completion.
 
 ## Commands
 
@@ -54,10 +89,11 @@ quantrisk validate --spec sample-data/portfolio-spec.json
 quantrisk run --spec sample-data/portfolio-spec.json --output results
 ```
 
-`validate` parses the spec and its CSV and prints a JSON summary of
-what the run would cover — the weights, the date grid, the benchmark,
-the stress scenario names, the Monte Carlo request — without computing
-a single metric.
+`validate` parses the spec and its CSV, proves the run would complete
+(see "Validation implies runnability" above), and prints a JSON
+summary of what the run would cover — the weights, the date grid, the
+benchmark, the stress scenario names, the Monte Carlo request —
+without publishing a single number.
 
 `run` evaluates everything through the same entry points a direct
 library call would use and writes two artifacts into the output
