@@ -439,7 +439,7 @@ weights and the quadratic program does real work; SLSQP solves it, and
 its answer is validated — success flag, weight-sum and target-return
 residuals within 1e-8, no long-only weight below zero — never trusted.
 
-### Reachability and shape
+### Reachability, shape, and the dominated branch
 
 Long-only, the achievable expected returns are exactly the interval
 between the worst and the best single asset; targets outside it are
@@ -448,12 +448,31 @@ leverage reaches any target — here 0.12 needs `w = (−0.4, 1.4)` —
 unless every asset carries the same expected return, in which case
 only that value is achievable and anything else is rejected.
 
-Volatility along the frontier falls as the target rises toward the
+Volatility along the sweep falls as the target rises toward the
 minimum-variance return (0.063636 above) and rises past it, and no
-frontier point undercuts the closed-form minimum. The tests assert
+returned point undercuts the closed-form minimum. The tests assert
 that shape on a grid of targets, and separately that a deeply
 negative-return asset receives exactly zero weight in long-only
-frontiers at high targets.
+sweeps at high targets.
+
+That shape means a target sweep is not the efficient frontier by
+itself. Every point below the minimum-variance return is dominated:
+the minimum-variance portfolio has the same or less risk and strictly
+more return, so no one should hold the lower-branch portfolio, and
+plotting the full sweep as "the efficient frontier" misstates what
+the curve is. Because the targets are caller-supplied, the engine
+answers all of them rather than silently dropping some, and labels
+each `FrontierPoint` with an `efficient` flag: `True` from the
+minimum-variance return upward — the efficient frontier proper —
+`False` on the dominated branch below it. The boundary is computed
+under the same constraint set as the sweep, which matters: long-only,
+the comparison uses the long-only minimum-variance portfolio, whose
+return can differ from the unconstrained one whenever the
+unconstrained minimum holds short positions. On the fixture the
+boundary is 7/110 = 0.063636: a 0.06 target is flagged dominated, a
+0.08 target efficient, and the tests pin the boundary itself —
+targeting exactly the minimum-variance return is efficient, a hair
+below it is not.
 
 ## Numerical conditioning
 

@@ -32,8 +32,11 @@ under stated conventions — that is the whole product.
   in closed form via the normal equations (solved, never inverted),
   SLSQP for long-only bounds and target-return sweeps with every solver
   answer validated, and unreachable targets rejected with the reachable
-  range in the message. Expected returns must be supplied by the
-  caller: historical means are available as a helper but are noisy
+  range in the message. Each swept point is labeled `efficient` or
+  dominated against the minimum-variance return under the same
+  constraint set, so the dominated lower branch is never passed off as
+  part of the efficient frontier. Expected returns must be supplied by
+  the caller: historical means are available as a helper but are noisy
   estimators, and the engine never defaults to them silently.
 - Look-ahead-safe backtesting: a walk-forward engine whose policies
   receive a `PolicyWindow` sliced strictly before the decision date —

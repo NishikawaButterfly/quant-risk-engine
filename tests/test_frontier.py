@@ -56,6 +56,17 @@ SIGMA_SHORT = (
     (0.0001, 0.0001, 0.0009),
 )
 
+# Expected returns for SIGMA_SHORT, chosen so the long-only and the
+# unconstrained minimum-variance returns differ by hand-checkable
+# amounts (see the efficient-branch boundary tests).
+MU_SHORT = (0.05, 0.10, 0.10)
+
+# The unconstrained minimum-variance return for the hand fixture:
+# weights (8/11, 3/11), so mu'w = (8 x 0.05 + 3 x 0.10) / 11 = 0.7/11
+# = 7/110 = 0.0636363636... Every sweep target below this value is a
+# dominated portfolio; every target at or above it is efficient.
+MINIMUM_VARIANCE_RETURN = 7.0 / 110.0
+
 
 def series_from_returns(name: str, start: float, returns: Sequence[float]) -> PriceSeries:
     prices = [start]
@@ -207,6 +218,76 @@ class PropertyTests(unittest.TestCase):
         (point,) = efficient_frontier((0.07, 0.07), SIGMA, (0.07,))
         self.assertAlmostEqual(point.weights[0], 8.0 / 11.0, places=9)
         self.assertAlmostEqual(point.weights[1], 3.0 / 11.0, places=9)
+
+
+class EfficientBranchTests(unittest.TestCase):
+    def test_points_below_the_minimum_variance_return_are_flagged_dominated(self) -> None:
+        # Boundary by hand: Sigma^-1 1 is proportional to
+        # (0.0008, 0.0003), so the minimum-variance weights are
+        # (8/11, 3/11) and the boundary return is
+        # (8 x 0.05 + 3 x 0.10) / 11 = 0.7/11 = 7/110. Targets below it
+        # are the dominated lower branch — for each there is a portfolio
+        # with the same risk and strictly higher return — and targets at
+        # or above it are the efficient frontier proper.
+        targets = (0.05, 0.06, MINIMUM_VARIANCE_RETURN, 0.07, 0.08, 0.12)
+        points = efficient_frontier(MU, SIGMA, targets)
+        flags = tuple(point.efficient for point in points)
+        self.assertEqual(flags, (False, False, True, True, True, True))
+
+    def test_the_minimum_variance_return_is_the_boundary(self) -> None:
+        # Digit for digit: 7/110 = 0.0636363636..., i.e. 0.063636 at six
+        # places, and the closed-form minimum-variance portfolio attains
+        # exactly that return with the supplied MU.
+        self.assertEqual(round(MINIMUM_VARIANCE_RETURN, 6), 0.063636)
+        weights = minimum_variance_portfolio(SIGMA)
+        attained = math.fsum(w * m for w, m in zip(weights, MU, strict=True))
+        self.assertAlmostEqual(attained, MINIMUM_VARIANCE_RETURN, places=12)
+        # Targeting the boundary itself reproduces the minimum-variance
+        # portfolio, which nothing dominates: efficient. A hair below —
+        # 1e-6, far past the 1e-8 solver tolerance — the minimum-variance
+        # portfolio has the same or less risk and strictly more return:
+        # dominated.
+        at_boundary, below = efficient_frontier(
+            MU, SIGMA, (MINIMUM_VARIANCE_RETURN, MINIMUM_VARIANCE_RETURN - 1e-6)
+        )
+        self.assertTrue(at_boundary.efficient)
+        self.assertFalse(below.efficient)
+
+    def test_the_long_only_boundary_uses_the_long_only_minimum(self) -> None:
+        # Long-only, SIGMA_SHORT's minimum-variance portfolio excludes
+        # the middle asset — weights (8/11, 0, 3/11), asserted elsewhere
+        # — so with MU_SHORT the long-only boundary is again
+        # (8 x 0.05 + 3 x 0.10) / 11 = 7/110 = 0.063636. Unconstrained,
+        # solving Sigma x = 1 by hand (in units of 1e-4: eliminate to
+        # 99.5 x_A = 56) gives weights (112/79, -48/79, 15/79), whose
+        # return is (112 x 0.05 - 48 x 0.10 + 15 x 0.10) / 79 = 2.3/79
+        # = 0.029114. A boundary computed under the wrong constraint set
+        # would call the long-only 0.06 point efficient; it is dominated.
+        targets = (0.06, MINIMUM_VARIANCE_RETURN, 0.08)
+        bounded = efficient_frontier(MU_SHORT, SIGMA_SHORT, targets, long_only=True)
+        self.assertEqual(tuple(point.efficient for point in bounded), (False, True, True))
+        # The same targets all sit above the unconstrained boundary
+        # 0.029114, so unconstrained they are all efficient.
+        free = efficient_frontier(MU_SHORT, SIGMA_SHORT, targets)
+        self.assertEqual(tuple(point.efficient for point in free), (True, True, True))
+
+    def test_equal_expected_returns_make_the_only_reachable_point_efficient(self) -> None:
+        # With every expected return equal, the one reachable target is
+        # the minimum-variance return itself: the boundary, efficient.
+        (point,) = efficient_frontier((0.07, 0.07), SIGMA, (0.07,))
+        self.assertTrue(point.efficient)
+
+    def test_the_efficient_flag_matches_the_volatility_shape(self) -> None:
+        # The dominated branch is exactly where volatility falls as the
+        # target rises: on a grid straddling the boundary, the flag
+        # flips from False to True exactly once, at the first target
+        # >= 7/110.
+        targets = tuple(0.05 + 0.005 * step for step in range(11))
+        points = efficient_frontier(MU, SIGMA, targets)
+        expected = tuple(target >= MINIMUM_VARIANCE_RETURN for target in targets)
+        self.assertEqual(tuple(point.efficient for point in points), expected)
+        self.assertIn(False, expected)
+        self.assertIn(True, expected)
 
 
 class ValidationTests(unittest.TestCase):
