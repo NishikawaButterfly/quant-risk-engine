@@ -350,5 +350,60 @@ class ValidationTests(unittest.TestCase):
             still.risk_contributions((flat_one, flat_two))
 
 
+def _wiggle_series(name: str, start: float, wiggle: float) -> PriceSeries:
+    """Prices alternating between ``start`` and ``start * (1 + wiggle)``.
+
+    The six returns alternate ±wiggle (to a relative float error of
+    ~1e-16), so the daily sample stddev is ``wiggle * sqrt(6/5)`` —
+    about ``1.1 * wiggle`` — putting the series precisely on either
+    side of MIN_VOLATILITY by choice of ``wiggle``.
+    """
+
+    prices = tuple(start if index % 2 == 0 else start * (1.0 + wiggle) for index in range(7))
+    return PriceSeries(name=name, dates=DATES, prices=prices)
+
+
+class VarianceToleranceTests(unittest.TestCase):
+    """The stddev and variance denominators share one constant.
+
+    The old guards fired only at exactly zero; a sub-tolerance wiggle
+    (stddev ~5.5e-13, below MIN_VOLATILITY = 1e-12) was accepted by
+    every one of them and produced correlations and risk contributions
+    made of float rounding noise. These fixtures sit in that formerly
+    accepted region and must now be rejected — and their ten-times
+    larger twins must still compute, at every site.
+    """
+
+    def test_correlation_rejects_a_series_just_below_the_tolerance(self) -> None:
+        nearly_flat = _wiggle_series("NRF", 100.0, 5e-13)
+        with self.assertRaisesRegex(ValueError, "'NRF'.*MIN_VOLATILITY"):
+            correlation_matrix((SERIES_A, nearly_flat))
+
+    def test_correlation_computes_just_above_the_tolerance(self) -> None:
+        barely_alive = _wiggle_series("BRL", 100.0, 5e-12)
+        matrix = correlation_matrix((SERIES_A, barely_alive))
+        self.assertEqual(matrix[0][0], 1.0)
+        self.assertEqual(matrix[1][1], 1.0)
+        self.assertTrue(all(math.isfinite(value) for row in matrix for value in row))
+
+    def test_risk_contributions_reject_portfolio_variance_below_the_squared_tolerance(
+        self,
+    ) -> None:
+        # A variance site: the same constant applies squared. Portfolio
+        # stddev ~5.5e-13, so its variance ~3e-25 < MIN_VOLATILITY².
+        first = _wiggle_series("FL1", 100.0, 5e-13)
+        second = _wiggle_series("FL2", 50.0, 5e-13)
+        still = Portfolio(names=("FL1", "FL2"), weights=(0.5, 0.5))
+        with self.assertRaisesRegex(ValueError, "zero-variance.*MIN_VOLATILITY"):
+            still.risk_contributions((first, second))
+
+    def test_risk_contributions_compute_just_above_the_squared_tolerance(self) -> None:
+        first = _wiggle_series("FL1", 100.0, 5e-12)
+        second = _wiggle_series("FL2", 50.0, 5e-12)
+        still = Portfolio(names=("FL1", "FL2"), weights=(0.5, 0.5))
+        contributions = still.risk_contributions((first, second))
+        self.assertAlmostEqual(math.fsum(contributions.values()), 1.0, places=12)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

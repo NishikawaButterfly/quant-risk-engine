@@ -150,6 +150,43 @@ class LateFailureRegressionTests(unittest.TestCase):
             fixture, "Sharpe ratio is undefined for constant returns"
         )
 
+    def test_a_near_zero_variance_asset_fails_validation(self) -> None:
+        # AAA is not exactly constant: it wobbles by 5e-13 relative
+        # (returns ±5e-13, daily stddev ~5.8e-13 — below the engine's
+        # MIN_VOLATILITY of 1e-12 but above exact zero). Before the
+        # unified tolerance this spec validated and ran, reporting a
+        # Sharpe ratio computed from float rounding noise. The refusal
+        # surfaces through validate automatically because feasibility
+        # evaluates the spec through the same metrics code path.
+        fixture = SpecDirectory(
+            self,
+            "Date,AAA,BBB\n"
+            "2026-01-05,100.0,50.0\n"
+            "2026-01-06,100.00000000005,51.0\n"
+            "2026-01-07,100.0,50.5\n"
+            "2026-01-08,100.00000000005,49.0\n",
+            _base_spec(),
+        )
+        self.assert_validate_and_run_agree_on_refusal(
+            fixture, "Sharpe ratio is undefined for constant returns"
+        )
+
+    def test_an_asset_just_above_the_variance_tolerance_validates(self) -> None:
+        # Ten times the wobble (returns ±5e-12, stddev ~5.8e-12) sits
+        # just above MIN_VOLATILITY: the same spec shape must still
+        # validate and run — the tolerance rejects noise, not data.
+        fixture = SpecDirectory(
+            self,
+            "Date,AAA,BBB\n"
+            "2026-01-05,100.0,50.0\n"
+            "2026-01-06,100.0000000005,51.0\n"
+            "2026-01-07,100.0,50.5\n"
+            "2026-01-08,100.0000000005,49.0\n",
+            _base_spec(),
+        )
+        validate_code, validate_message = fixture.validate()
+        self.assertEqual(validate_code, 0, validate_message)
+
     def test_a_short_position_reaching_a_nonpositive_path_fails_validation(self) -> None:
         # AAA triples on day two; a -100% short weight on it drives the
         # compounded portfolio value path to -2.0, which the stress

@@ -40,7 +40,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from quantrisk._validation import require_finite_number
+from quantrisk._validation import require_finite_number, require_meaningful_volatility
 from quantrisk.metrics import TRADING_DAYS_PER_YEAR
 from quantrisk.series import MIN_ALIGN_SERIES, PriceSeries
 
@@ -224,18 +224,21 @@ def correlation_matrix(series: Sequence[PriceSeries]) -> tuple[tuple[float, ...]
     Each covariance is divided by the product of the two sample standard
     deviations. The diagonal is set to exactly 1.0 and off-diagonal
     entries are clipped into [-1, 1], removing float noise in the last
-    digit; a constant-return series has zero variance and no defined
-    correlation, so it is rejected.
+    digit. A series whose returns are constant to within the engine's
+    near-zero-variance tolerance
+    (:data:`~quantrisk._validation.MIN_VOLATILITY`) has no defined
+    correlation — its denominator would hold nothing but rounding
+    noise — and is rejected by name.
     """
 
     items = _validate_aligned(series)
     matrix = np.asarray(covariance_matrix(items))
     deviations = np.sqrt(np.diag(matrix))
     for item, deviation in zip(items, deviations, strict=True):
-        if deviation == 0.0:
-            raise ValueError(
-                f"series {item.name!r} has constant returns; its correlation is undefined"
-            )
+        require_meaningful_volatility(
+            float(deviation),
+            f"series {item.name!r} has constant returns; its correlation is undefined",
+        )
     correlations = np.clip(matrix / np.outer(deviations, deviations), -1.0, 1.0)
     np.fill_diagonal(correlations, 1.0)
     return tuple(tuple(float(value) for value in row) for row in correlations)
@@ -362,15 +365,24 @@ class Portfolio:
         contributions sum to one; each one is a fraction of total
         portfolio variance, not an isolated volatility. A short or
         strongly diversifying position can contribute a negative share.
-        A zero-variance portfolio has nothing to attribute and is
-        rejected.
+        A portfolio whose variance sits below the square of the
+        engine's near-zero-variance tolerance
+        (:data:`~quantrisk._validation.MIN_VOLATILITY`) has nothing to
+        attribute but rounding noise and is rejected.
         """
 
         weights, matrix = self._weights_and_covariance(series)
         marginal = matrix @ weights
         variance = float(weights @ marginal)
-        if variance == 0.0:
-            raise ValueError("risk contributions are undefined for a zero-variance portfolio")
+        # A variance site: the shared tolerance is stated as a daily
+        # volatility, so the guard runs on sqrt(variance) — that is,
+        # MIN_VOLATILITY squared in variance terms. The max() absorbs
+        # the infinitesimally negative w'Sw that PSD rounding noise
+        # can leave on an (already validated) degenerate matrix.
+        require_meaningful_volatility(
+            math.sqrt(max(variance, 0.0)),
+            "risk contributions are undefined for a zero-variance portfolio",
+        )
         return {
             name: float(weight * against / variance)
             for name, weight, against in zip(self.names, weights, marginal, strict=True)
