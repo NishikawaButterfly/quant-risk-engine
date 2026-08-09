@@ -75,10 +75,25 @@ class PolicyWindow:
     decision is one session back, not three days of missing data.
     ``prices[i]`` is the price history of ``names[i]`` on ``dates``,
     taken verbatim from series already validated by
-    :class:`~quantrisk.series.PriceSeries`. A directly constructed
-    window is re-checked all the same: every price must be a finite
-    number (booleans rejected), through the engine's shared
-    validation path.
+    :class:`~quantrisk.series.PriceSeries`.
+
+    The constructor is public, so it enforces the invariants instead
+    of trusting the backtest loop to be its only caller. Construction
+    rejects any window where these do not hold:
+
+    * every date, ``decision_date`` included, is a canonical ISO
+      ``YYYY-MM-DD`` string, so lexicographic order equals
+      chronological order;
+    * ``dates`` are strictly increasing — sorted, no duplicates;
+    * every observation lies strictly before ``decision_date``. This
+      is the look-ahead boundary itself — the invariant the whole
+      backtest's honesty rests on — enforced physically: a valid
+      window cannot contain, and so cannot leak, data from its
+      decision date or later;
+    * ``names`` are unique with one price row each, every row has one
+      entry per date, and every price is a finite number (booleans
+      rejected), through the engine's shared validation path — a
+      shape mismatch would silently misattribute prices to assets.
     """
 
     decision_date: str
@@ -98,14 +113,22 @@ class PolicyWindow:
         if not self.dates:
             raise ValueError("a policy window needs at least one observed day")
         owner = f"policy window for {self.decision_date}"
-        parsed = [_parse_iso_date(text, owner) for text in (*self.dates, self.decision_date)]
+        decision = _parse_iso_date(self.decision_date, owner)
+        parsed = [_parse_iso_date(text, owner) for text in self.dates]
         for previous, current in pairwise(parsed):
             if current <= previous:
+                if current == previous:
+                    raise ValueError(f"{owner} has duplicate date {current.isoformat()}")
                 raise ValueError(
-                    "window dates must be strictly increasing and strictly before "
-                    f"the decision date {self.decision_date}; "
+                    "window dates must be strictly increasing; "
                     f"{current.isoformat()} follows {previous.isoformat()}"
                 )
+        if parsed[-1] >= decision:
+            raise ValueError(
+                "window observations must lie strictly before the decision date: "
+                f"last observation {parsed[-1].isoformat()} does not precede "
+                f"{self.decision_date}"
+            )
         for name, row in zip(self.names, self.prices, strict=True):
             if len(row) != len(self.dates):
                 raise ValueError(
