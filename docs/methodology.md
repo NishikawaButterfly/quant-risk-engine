@@ -155,7 +155,9 @@ Sharpe      = 0.0039 / 0.02880972 * sqrt(252) = 2.148948
 ```
 
 The ratio is undefined for constant returns and the engine raises
-rather than dividing by zero.
+rather than dividing by zero — "constant" meaning a daily standard
+deviation below the shared near-zero-variance tolerance
+(`MIN_VOLATILITY`, see the degenerate-variance section).
 
 ## Sortino ratio
 
@@ -170,8 +172,10 @@ downside deviation = sqrt((0.0009 + 0.0004) / 5) = sqrt(0.00026)
 Sortino            = (0.004 - 0) / 0.01612451 * sqrt(252) = 3.937981
 ```
 
-When no return falls below the target the ratio is undefined and the
-engine raises.
+When no return falls meaningfully below the target — a downside
+deviation under the shared near-zero-variance tolerance
+(`MIN_VOLATILITY`, see the degenerate-variance section) — the ratio
+is undefined and the engine raises.
 
 ## Maximum drawdown
 
@@ -297,8 +301,10 @@ corr = 0.0001 / (0.02 * 0.03) = 1/6 = 0.166667
 
 The engine pins the correlation diagonal to exactly 1.0 and clips
 off-diagonal entries into [-1, 1], removing float noise in the last
-digit; a constant-return series has zero variance, so its correlation
-is undefined and rejected.
+digit; a series whose returns are constant to within the shared
+near-zero-variance tolerance (`MIN_VOLATILITY`, see the
+degenerate-variance section) has no defined correlation and is
+rejected by name.
 
 ## Portfolio volatility and risk contribution
 
@@ -349,6 +355,10 @@ contributions always sum to one. Here they are exactly equal: B's
 larger variance and its smaller weight cancel precisely. A short or
 strongly diversifying position can carry a negative contribution;
 shorts are allowed and flagged (`has_short_positions`), never hidden.
+A portfolio variance below the square of the shared near-zero
+tolerance (`MIN_VOLATILITY`, see the degenerate-variance section)
+leaves nothing to attribute but rounding noise, and the decomposition
+is rejected.
 
 ## Diversification
 
@@ -531,6 +541,88 @@ the singular-solve rejection — stay in the code as defense in depth,
 but validation now happens at entry, so bad matrices are named for
 what they are instead of surfacing as solver failures.
 
+## Degenerate variance
+
+Several statistics divide by a volatility or a variance: the Sharpe
+ratio (returns' stddev), the Sortino ratio (downside deviation),
+every correlation (the product of two stddevs), beta (the benchmark
+variance), risk contributions (the portfolio variance `w'Sw`), and
+the information ratio (the tracking error). Each of these guards its
+denominator against one named constant,
+`quantrisk._validation.MIN_VOLATILITY = 1e-12`, stated as a *daily
+volatility* — the sample standard deviation of daily simple returns.
+Sites whose denominator is a variance compare against its square
+(equivalently, they guard `sqrt(variance)`); there is no second
+number anywhere.
+
+The behavior when the guard triggers is rejection: a `ValueError`
+naming the degenerate quantity and its owner (the series, the
+benchmark, the portfolio), with a uniform tail naming the constant
+and pointing here. The engine refuses to divide by a denominator
+that holds no information, for the same reason the frontier refuses
+a numerically singular covariance: an error the caller sees beats a
+confident number nobody can trust. The one stated exception is the
+information ratio, which *degrades* instead — the field is `None` at
+the same threshold (compared on the daily active stddev, before
+annualization). A sub-tolerance tracking error does not invalidate
+the comparison that produced it: the portfolio is the benchmark plus
+a fixed daily offset, and beta, alpha, and the capture ratios all
+remain meaningful, so refusing the whole comparison would discard
+valid statistics to avoid one undefined field.
+
+Why 1e-12. The bound is argued from the data's own precision, on
+both sides:
+
+- *Below, rounding can reach.* Prices enter as float64, each carrying
+  relative representation error up to eps/2 with eps = 2⁻⁵² ≈ 2.2e-16.
+  A simple return `p1/p0 − 1` computed from a truly constant price
+  path can therefore come out nonzero by rounding alone, with
+  magnitude of order eps (the quotient's rounding; the subtraction
+  near 1 is exact). The sample standard deviation of such noise
+  returns is bounded by their largest deviation — order 1e-16 — so a
+  computed daily volatility near that level proves nothing about the
+  data: it can be manufactured by representation error from a series
+  that never moved.
+- *Above, real data lives.* The smallest volatility a real price grid
+  can express is bounded below by its tick: a single move of one part
+  in 1e-8 (a hundredth of a cent on a $1000 price, finer than any
+  traded increment) once in ten thousand sessions already leaves a
+  daily stddev around 1e-10. Any tradable series sits orders of
+  magnitude above that.
+
+1e-12 sits in the gap: four orders of magnitude above the largest
+rounding artifact — headroom for noise accumulated through alignment,
+mean subtraction, and covariance sums — and two below the smallest
+volatility an economically distinguishable price path can carry. On
+either side of the line the classification is provable from float64
+arithmetic and the price grid, not tuned to any dataset. The
+threshold is deliberately *not* scaled per-series: daily simple
+returns are already dimensionless fractions of price, so one absolute
+bound in return space applies to every series regardless of price
+level.
+
+What the tolerance does not govern, stated so the boundary is
+visible: volatility as an *output or factor* (annualized volatility,
+parametric VaR's `z × stddev`, the Monte Carlo normal scale) needs no
+guard, because nothing divides by it — a near-zero volatility is then
+simply a small reported number. And the frontier's solvers take a raw
+covariance matrix, not return series; their protection is the
+conditioning gates above, which measure what actually harms a solve
+(eigenvalue *ratios*, not absolute variances — the minimum-variance
+weights are invariant to scaling the whole matrix). Wherever the
+engine derives a volatility from price series and divides by it, the
+tolerance applies; both mechanisms reject rather than degrade.
+
+Before this tolerance existed, every one of these sites guarded
+against exactly `0.0` — thresholds that were nominally equal but
+porous: a variance of 1e-25, producible by rounding alone, passed all
+of them and returned a Sharpe ratio, a beta, or a correlation made
+entirely of noise. The tests exercise each site with a series just
+below the tolerance (stddev ≈ 5.5e-13, formerly accepted everywhere)
+and just above it (≈ 5.5e-12, still accepted everywhere), and the
+feasibility gate makes `quantrisk validate` refuse such a spec with
+the same message the metrics raise.
+
 ## Look-ahead-safe backtesting
 
 A backtest walks a weight policy forward through the aligned series:
@@ -703,8 +795,11 @@ var(b)    = 0.002 / 5 = 0.0004
 beta      = 0.0006 / 0.0004 = 3/2 = 1.5
 ```
 
-A constant-return benchmark has zero variance — the denominator holds
-no information — and is rejected rather than divided by.
+A benchmark whose returns are constant to within the shared
+near-zero-variance tolerance (`MIN_VOLATILITY`, squared for this
+variance denominator — see the degenerate-variance section) holds no
+information in the denominator and is rejected rather than divided
+by.
 
 ### Alpha
 
@@ -742,11 +837,14 @@ IR     = (0.01 × 252) / sqrt(0.0504) = sqrt(126) = 11.224972
 ```
 
 The information ratio is the annualized mean active return over the
-tracking error. A zero tracking error means the active return is
-constant — the portfolio is the benchmark plus a fixed daily offset —
-so the ratio has a zero denominator and is reported as `None`, not a
-number and not an exception: unlike a constant benchmark, the
+tracking error. An active return constant to within the shared
+near-zero-variance tolerance (`MIN_VOLATILITY`, compared on the daily
+active stddev — see the degenerate-variance section) means the
+portfolio is the benchmark plus a fixed daily offset, so the ratio
+has a denominator of pure noise and is reported as `None`, not a
+number and not an exception: unlike a degenerate benchmark, the
 comparison itself is legitimate and every other statistic stands.
+This is the tolerance's one degrade site; every other site rejects.
 
 ### Capture ratios
 

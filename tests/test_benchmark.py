@@ -365,6 +365,49 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "zero variance"):
             compare_to_benchmark(portfolio, sleeves, _benchmark((64.0, 64.0, 64.0, 64.0), dates))
 
+    def test_a_benchmark_just_below_the_variance_tolerance_is_rejected(self) -> None:
+        # Beta divides by the benchmark *variance*, so the shared
+        # volatility tolerance applies squared: benchmark returns
+        # alternating ±5e-13 have stddev ~5.8e-13 < MIN_VOLATILITY,
+        # i.e. variance below MIN_VOLATILITY². Before the tolerance
+        # this benchmark passed the exact-zero guard and produced a
+        # beta of order 1e+11 out of pure rounding noise.
+        dates = GRID[:5]
+        portfolio, sleeves = _twin_portfolio((64.0, 80.0, 64.0, 80.0, 64.0), dates)
+        wobble = tuple(10.0 if index % 2 == 0 else 10.0 * (1.0 + 5e-13) for index in range(5))
+        with self.assertRaisesRegex(ValueError, "zero variance.*MIN_VOLATILITY"):
+            compare_to_benchmark(portfolio, sleeves, _benchmark(wobble, dates))
+
+    def test_a_benchmark_just_above_the_variance_tolerance_computes(self) -> None:
+        dates = GRID[:5]
+        portfolio, sleeves = _twin_portfolio((64.0, 80.0, 64.0, 80.0, 64.0), dates)
+        wobble = tuple(10.0 if index % 2 == 0 else 10.0 * (1.0 + 5e-12) for index in range(5))
+        result = compare_to_benchmark(portfolio, sleeves, _benchmark(wobble, dates))
+        self.assertTrue(math.isfinite(result.beta))
+
+    def test_information_ratio_degrades_at_the_same_tolerance(self) -> None:
+        # The one stated degrade site: an active return whose daily
+        # stddev sits below MIN_VOLATILITY yields information_ratio
+        # None — same constant, same trigger, but the comparison's
+        # other statistics stand, exactly as with an exactly-zero
+        # tracking error. Ten times the wiggle and the ratio is back.
+        dates = GRID[:5]
+        base = (64.0, 80.0, 64.0, 80.0, 64.0)
+        benchmark = _benchmark(base, dates)
+        for wiggle, expect_none in ((5e-13, True), (5e-12, False)):
+            offset = tuple(
+                price if index % 2 == 0 else price * (1.0 + wiggle)
+                for index, price in enumerate(base)
+            )
+            portfolio, sleeves = _twin_portfolio(offset, dates)
+            result = compare_to_benchmark(portfolio, sleeves, benchmark)
+            self.assertTrue(math.isfinite(result.beta))
+            self.assertIsNotNone(result.up_capture)
+            if expect_none:
+                self.assertIsNone(result.information_ratio)
+            else:
+                self.assertIsNotNone(result.information_ratio)
+
     def test_a_bad_risk_free_rate_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be finite"):
             _compare(PORTFOLIO_RETURNS, BENCHMARK_RETURNS, risk_free_rate_daily=math.nan)

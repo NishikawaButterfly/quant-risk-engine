@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import unittest
 
+from quantrisk._validation import MIN_VOLATILITY
 from quantrisk.metrics import (
     TRADING_DAYS_PER_YEAR,
     annualized_volatility,
@@ -171,6 +172,46 @@ class ValidationTests(unittest.TestCase):
     def test_sortino_ratio_rejects_series_with_no_downside(self) -> None:
         with self.assertRaisesRegex(ValueError, "below the target"):
             sortino_ratio((0.01, 0.02, 0.03))
+
+
+class VarianceToleranceTests(unittest.TestCase):
+    """One named tolerance guards every volatility denominator.
+
+    Before the tolerance every guard in the engine compared its
+    denominator against exactly ``0.0``, so a volatility produced by
+    float64 rounding alone (each return carries absolute noise of
+    order 1e-16) sailed through the guard and came back as a huge,
+    meaningless ratio. The fixtures here sit strictly between the old
+    threshold (exact zero) and the new one (``MIN_VOLATILITY``) —
+    exactly the region every old guard accepted and the unified guard
+    rejects.
+    """
+
+    # Alternating ±5e-13: mean exactly 0, sample stddev ~5.8e-13,
+    # just below the 1e-12 tolerance. Ten times larger: just above.
+    BELOW = (5e-13, -5e-13, 5e-13, -5e-13)
+    ABOVE = (5e-12, -5e-12, 5e-12, -5e-12)
+
+    def test_the_tolerance_is_one_named_constant(self) -> None:
+        self.assertEqual(MIN_VOLATILITY, 1e-12)
+
+    def test_sharpe_rejects_volatility_just_below_the_tolerance(self) -> None:
+        with self.assertRaisesRegex(ValueError, "MIN_VOLATILITY"):
+            sharpe_ratio(self.BELOW, risk_free_rate_annual=0.0)
+
+    def test_sharpe_computes_just_above_the_tolerance(self) -> None:
+        # Mean exactly zero, so the ratio is exactly 0.0 — the point is
+        # that it computes rather than raising.
+        self.assertEqual(sharpe_ratio(self.ABOVE, risk_free_rate_annual=0.0), 0.0)
+
+    def test_sortino_rejects_downside_just_below_the_tolerance(self) -> None:
+        # One shortfall of 5e-13 gives a downside deviation of 2.5e-13.
+        with self.assertRaisesRegex(ValueError, "MIN_VOLATILITY"):
+            sortino_ratio((0.0, -5e-13, 0.0, 5e-13))
+
+    def test_sortino_computes_just_above_the_tolerance(self) -> None:
+        # One shortfall of 5e-12: downside deviation 2.5e-12, mean 0.
+        self.assertEqual(sortino_ratio((0.0, -5e-12, 0.0, 5e-12)), 0.0)
 
 
 if __name__ == "__main__":  # pragma: no cover

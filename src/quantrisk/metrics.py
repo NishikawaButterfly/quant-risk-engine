@@ -24,7 +24,11 @@ from dataclasses import dataclass
 
 from scipy.stats import norm
 
-from quantrisk._validation import require_finite_number, require_finite_numbers
+from quantrisk._validation import (
+    require_finite_number,
+    require_finite_numbers,
+    require_meaningful_volatility,
+)
 from quantrisk.series import PriceSeries
 
 #: Annualization convention: 252 trading sessions per year. The factor
@@ -77,14 +81,17 @@ def sharpe_ratio(returns: Sequence[float], risk_free_rate_annual: float) -> floa
 
     The annual risk-free rate is converted to a periodic rate by plain
     division by 252. The ratio of periodic mean excess return to periodic
-    sample standard deviation is annualized with sqrt(252).
+    sample standard deviation is annualized with sqrt(252). Returns that
+    are constant to within the engine's near-zero-variance tolerance
+    (:data:`~quantrisk._validation.MIN_VOLATILITY`) leave the ratio's
+    denominator holding nothing but rounding noise and are rejected.
     """
 
     values = _validate_returns(returns)
     rate = require_finite_number(risk_free_rate_annual, "risk_free_rate_annual")
-    stddev = _sample_stddev(values)
-    if stddev == 0:
-        raise ValueError("Sharpe ratio is undefined for constant returns")
+    stddev = require_meaningful_volatility(
+        _sample_stddev(values), "Sharpe ratio is undefined for constant returns"
+    )
     risk_free_periodic = rate / TRADING_DAYS_PER_YEAR
     excess = _mean(values) - risk_free_periodic
     return excess / stddev * math.sqrt(TRADING_DAYS_PER_YEAR)
@@ -97,15 +104,20 @@ def sortino_ratio(returns: Sequence[float], target_return_periodic: float = 0.0)
     downside deviation is the root of the mean squared shortfall below
     the target, averaged over all ``n`` observations — not only the
     losing ones and not ``n - 1``. Annualization mirrors the Sharpe
-    ratio: mean excess over downside deviation, times sqrt(252).
+    ratio: mean excess over downside deviation, times sqrt(252). A
+    downside deviation below the engine's near-zero-variance tolerance
+    (:data:`~quantrisk._validation.MIN_VOLATILITY`) means no return
+    fell below the target by more than rounding noise, and the ratio
+    is rejected as undefined.
     """
 
     values = _validate_returns(returns)
     target = require_finite_number(target_return_periodic, "target_return_periodic")
     shortfalls = tuple(min(value - target, 0.0) for value in values)
-    downside = math.sqrt(sum(shortfall**2 for shortfall in shortfalls) / len(values))
-    if downside == 0:
-        raise ValueError("Sortino ratio is undefined when no return falls below the target")
+    downside = require_meaningful_volatility(
+        math.sqrt(sum(shortfall**2 for shortfall in shortfalls) / len(values)),
+        "Sortino ratio is undefined when no return falls meaningfully below the target",
+    )
     excess = _mean(values) - target
     return excess / downside * math.sqrt(TRADING_DAYS_PER_YEAR)
 

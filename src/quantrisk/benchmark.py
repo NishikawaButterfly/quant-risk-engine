@@ -32,12 +32,16 @@ Conventions, stated once:
 * **Tracking error** is the sample standard deviation of the active
   returns ``p - b``, annualized with sqrt(252). The **information
   ratio** is the annualized mean active return (mean times 252) over
-  that tracking error. A zero tracking error means the active return
-  is constant — the portfolio is the benchmark plus a fixed daily
-  offset — so the ratio has a zero denominator and is reported as
-  ``None`` rather than a number or an exception: unlike a constant
-  benchmark, this is a legitimate comparison whose other statistics
-  remain meaningful.
+  that tracking error. An active return constant to within the
+  engine's near-zero-variance tolerance
+  (:data:`~quantrisk._validation.MIN_VOLATILITY`, compared on the
+  daily stddev) means the portfolio is the benchmark plus a fixed
+  daily offset — the ratio's denominator holds nothing but rounding
+  noise, and the field is reported as ``None`` rather than a number
+  or an exception: unlike a degenerate benchmark, this is a
+  legitimate comparison whose other statistics remain meaningful.
+  This is the tolerance's one *degrade* site; every other site
+  rejects.
 * **Capture ratios** condition on the benchmark's sign. Up capture is
   the mean portfolio return over the days the benchmark rose, divided
   by the mean benchmark return over those same days; down capture is
@@ -53,7 +57,12 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from quantrisk._validation import require_finite_number, require_finite_numbers
+from quantrisk._validation import (
+    MIN_VOLATILITY,
+    require_finite_number,
+    require_finite_numbers,
+    require_meaningful_volatility,
+)
 from quantrisk.metrics import TRADING_DAYS_PER_YEAR, _mean, _sample_stddev
 from quantrisk.portfolio import Portfolio, _validate_aligned
 from quantrisk.series import PriceSeries
@@ -164,10 +173,13 @@ def compare_to_benchmark(
     return series must be finite. ``risk_free_rate_daily`` is a *daily*
     rate entering only the alpha (beta and the active-return statistics
     are invariant to a constant shift applied to both series). A
-    constant-return benchmark has zero variance, leaving beta's
-    denominator empty of information, and is rejected rather than
-    divided by. See the module docstring for each statistic's convention
-    and for when a field is ``None``.
+    benchmark whose returns are constant to within the engine's
+    near-zero-variance tolerance
+    (:data:`~quantrisk._validation.MIN_VOLATILITY`, squared for this
+    variance denominator) leaves beta's denominator empty of
+    information and is rejected rather than divided by. See the module
+    docstring for each statistic's convention and for when a field is
+    ``None``.
     """
 
     portfolio_returns, benchmark_returns = _paired_returns(
@@ -176,11 +188,14 @@ def compare_to_benchmark(
     rate = require_finite_number(risk_free_rate_daily, "risk_free_rate_daily")
 
     benchmark_variance = _sample_covariance(benchmark_returns, benchmark_returns)
-    if benchmark_variance == 0.0:
-        raise ValueError(
-            "benchmark returns are constant (zero variance); beta divides by the "
-            "benchmark variance and is undefined"
-        )
+    # A variance site: the shared near-zero tolerance is stated as a
+    # daily volatility, so the guard runs on sqrt(variance) — that is,
+    # MIN_VOLATILITY squared in variance terms.
+    require_meaningful_volatility(
+        math.sqrt(benchmark_variance),
+        "benchmark returns are effectively constant (near-zero variance); beta "
+        "divides by the benchmark variance and is undefined",
+    )
     beta = _sample_covariance(portfolio_returns, benchmark_returns) / benchmark_variance
     alpha_daily = (_mean(portfolio_returns) - rate) - beta * (_mean(benchmark_returns) - rate)
 
@@ -189,8 +204,16 @@ def compare_to_benchmark(
     )
     active_stddev = _sample_stddev(active)
     tracking_error = active_stddev * math.sqrt(TRADING_DAYS_PER_YEAR)
+    # The engine's one *degrade* site for the shared tolerance: an
+    # active return constant to within MIN_VOLATILITY (compared on the
+    # daily stddev, before annualization) leaves the information ratio
+    # without a denominator, but the comparison itself stays legitimate
+    # and every other statistic stands — so the field is None rather
+    # than an exception, exactly as for an exactly-zero tracking error.
     information_ratio = (
-        None if tracking_error == 0.0 else _mean(active) * TRADING_DAYS_PER_YEAR / tracking_error
+        None
+        if active_stddev < MIN_VOLATILITY
+        else _mean(active) * TRADING_DAYS_PER_YEAR / tracking_error
     )
 
     return BenchmarkComparison(
