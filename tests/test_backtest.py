@@ -252,6 +252,21 @@ class LookAheadTests(unittest.TestCase):
                     prices=((100.0, 101.0),),
                 )
 
+    def test_the_look_ahead_error_names_the_offending_observation(self) -> None:
+        # The message must state the violated invariant precisely: which
+        # observation failed to precede which decision date, not a
+        # generic ordering complaint.
+        with self.assertRaisesRegex(
+            ValueError,
+            "strictly before.*last observation 2026-01-06 does not precede 2026-01-05",
+        ):
+            PolicyWindow(
+                decision_date="2026-01-05",
+                names=("AAA",),
+                dates=("2026-01-02", "2026-01-06"),
+                prices=((100.0, 101.0),),
+            )
+
 
 class PolicyWindowTests(unittest.TestCase):
     def test_a_valid_window_reports_length_and_returns(self) -> None:
@@ -304,6 +319,28 @@ class PolicyWindowTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "ISO|canonical"):
             PolicyWindow("2026-01-06", ("AAA",), ("2026-1-05",), ((100.0,),))
+
+    def test_windows_reject_duplicate_dates(self) -> None:
+        # A duplicate is its own violation, not an ordering accident:
+        # the message must say "duplicate", not claim a date follows
+        # itself.
+        with self.assertRaisesRegex(ValueError, "duplicate date 2026-01-05"):
+            PolicyWindow(
+                "2026-01-07",
+                ("AAA",),
+                ("2026-01-02", "2026-01-05", "2026-01-05"),
+                ((100.0, 101.0, 102.0),),
+            )
+
+    def test_windows_reject_a_malformed_decision_date(self) -> None:
+        # The decision date crosses the same boundary as the
+        # observations and is parsed by the same rules: real parsing
+        # first, then the canonical zero-padded form the engine's
+        # lexicographic date ordering relies on.
+        with self.assertRaisesRegex(ValueError, "not an ISO"):
+            PolicyWindow("2026-1-06", ("AAA",), ("2026-01-05",), ((100.0,),))
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            PolicyWindow("20260106", ("AAA",), ("2026-01-05",), ((100.0,),))
 
     def test_window_date_errors_name_the_window(self) -> None:
         # A malformed date must be traceable to the window that holds

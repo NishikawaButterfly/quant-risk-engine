@@ -642,10 +642,22 @@ aligned data at the decision date — the object physically contains
 the dates and prices strictly before that date and nothing else, so a
 policy that works from its window alone has no future data to read,
 and looking up the decision date or indexing past the window's end
-raises an error instead of returning a number. The window's
-constructor rejects any history that touches its own decision date,
-and the tests assert, for every rebalance of a run, that the window
-ends exactly one trading day before the decision date.
+raises an error instead of returning a number. The tests assert, for
+every rebalance of a run, that the window ends exactly one trading
+day before the decision date.
+
+`PolicyWindow`'s constructor is public, so it enforces the invariants
+itself rather than trusting the backtest loop to be its only caller —
+a directly constructed window is held to the same standard as an
+engine-built one. Construction rejects any window whose dates
+(decision date included) are not canonical ISO strings, whose
+observation dates are not strictly increasing (unsorted or
+duplicated), whose last observation does not lie strictly before the
+decision date — the look-ahead boundary itself — or whose price table
+is not shape-coherent: unique names, one price row per name, one
+finite entry per date. Each violation raises with a message naming
+what was violated, so misuse fails at construction instead of
+surfacing as a silently wrong backtest.
 
 The boundary stops at the interface: a Python callable can still
 reach future data through closures, external state, files, or APIs,
