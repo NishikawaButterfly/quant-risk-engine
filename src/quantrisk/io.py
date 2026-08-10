@@ -18,6 +18,12 @@ directory. A spec that could read files elsewhere on the machine is a
 confused deputy waiting to happen, and a spec whose data does not
 travel with it cannot be reproduced by whoever receives it.
 
+Both input files are hashed with SHA-256 at read time, over the raw
+bytes exactly as they came off the disk — before any decoding or
+parsing — and the digests travel on the :class:`RunSpec`. The results
+payload publishes them in its provenance block, so an artifact states
+verifiably which input bytes produced it.
+
 Writing publishes the artifact pair atomically as a pair: both files
 are staged next to their targets, any existing pair is set aside, and
 only then are both promoted with atomic replaces. If anything fails
@@ -30,6 +36,7 @@ explicit ``force``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -97,10 +104,15 @@ class RunSpec:
     date grid; both come out of :func:`~quantrisk.series.align`, so the
     intersection policy has already been applied. The stress and Monte
     Carlo blocks are empty (or ``None``) when the document does not
-    carry them.
+    carry them. ``spec_sha256`` and ``prices_csv_sha256`` are SHA-256
+    hex digests of the two input files' raw bytes as read, taken
+    before decoding or parsing, so they identify the exact file
+    contents rather than any re-serialization.
     """
 
     prices_csv_name: str
+    spec_sha256: str
+    prices_csv_sha256: str
     portfolio: Portfolio
     asset_series: tuple[PriceSeries, ...]
     benchmark: str | None
@@ -131,7 +143,14 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _read_bounded_text(path: Path, maximum_bytes: int) -> str:
+def _read_bounded_text(path: Path, maximum_bytes: int) -> tuple[str, str]:
+    """The file's decoded text and the SHA-256 hex digest of its raw bytes.
+
+    The digest is taken over the bytes exactly as read, before the
+    UTF-8 decode (so a byte-order mark counts): it identifies the file
+    content on disk, which is what a verifier will hash independently.
+    """
+
     try:
         size = path.stat().st_size
     except OSError as exc:
@@ -139,7 +158,8 @@ def _read_bounded_text(path: Path, maximum_bytes: int) -> str:
     if size > maximum_bytes:
         raise SpecFileError(f"{path.name} exceeds the {maximum_bytes}-byte limit")
     try:
-        return path.read_text(encoding="utf-8-sig")
+        raw = path.read_bytes()
+        return raw.decode("utf-8-sig"), hashlib.sha256(raw).hexdigest()
     except (OSError, UnicodeError) as exc:
         raise SpecFileError(f"cannot read {path} as UTF-8: {exc}") from exc
 
@@ -217,10 +237,10 @@ def _resolve_prices_path(spec_path: Path, relative: str) -> Path:
     return resolved
 
 
-def _parse_prices_csv(path: Path) -> tuple[PriceSeries, ...]:
+def _parse_prices_csv(path: Path, text: str) -> tuple[PriceSeries, ...]:
     """Every column of the CSV as a validated price series, in column order."""
 
-    lines = _read_bounded_text(path, _MAX_PRICES_BYTES).splitlines()
+    lines = text.splitlines()
     if not lines:
         raise SpecFileError(f"prices CSV {path.name} is empty")
     header = lines[0].split(",")
@@ -376,8 +396,11 @@ def load_spec(path: str | Path) -> RunSpec:
     """Load one JSON run spec and its price data, without side effects.
 
     Both reads are bounded, duplicate keys are rejected, and every
-    field error names the offending field. The prices CSV path must be
-    relative and stay inside the spec's directory. Cross-references are
+    field error names the offending field. Each file's raw bytes are
+    hashed with SHA-256 as they are read, and the digests travel on
+    the returned spec so the results can publish them as provenance.
+    The prices CSV path must be relative and stay inside the spec's
+    directory. Cross-references are
     checked here — portfolio tickers and the benchmark must be CSV
     columns, the benchmark must not carry a weight, and every stress
     scenario must be valid against the loaded data. Whether the loaded
@@ -388,9 +411,10 @@ def load_spec(path: str | Path) -> RunSpec:
     """
 
     spec_path = Path(path)
+    spec_text, spec_sha256 = _read_bounded_text(spec_path, _MAX_SPEC_BYTES)
     try:
         payload = json.loads(
-            _read_bounded_text(spec_path, _MAX_SPEC_BYTES),
+            spec_text,
             object_pairs_hook=_unique_json_object,
             parse_constant=_reject_nonfinite_token,
         )
@@ -404,7 +428,8 @@ def load_spec(path: str | Path) -> RunSpec:
             f"received {root.get('schema_version')!r}"
         )
     prices_path = _resolve_prices_path(spec_path, _required_string(root, "spec", "prices_csv"))
-    all_series = _parse_prices_csv(prices_path)
+    prices_text, prices_csv_sha256 = _read_bounded_text(prices_path, _MAX_PRICES_BYTES)
+    all_series = _parse_prices_csv(prices_path, prices_text)
     available = tuple(item.name for item in all_series)
     if "portfolio" not in root:
         raise SpecFileError("portfolio is required")
@@ -442,6 +467,8 @@ def load_spec(path: str | Path) -> RunSpec:
     )
     return RunSpec(
         prices_csv_name=prices_path.name,
+        spec_sha256=spec_sha256,
+        prices_csv_sha256=prices_csv_sha256,
         portfolio=portfolio,
         asset_series=asset_series,
         benchmark=benchmark,

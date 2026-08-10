@@ -5,17 +5,29 @@ points — the metrics, portfolio, benchmark, stress, and Monte Carlo
 modules — and returns one frozen evaluation. ``results_payload`` and
 ``render_report`` both read that evaluation and never recompute a
 number, so the JSON results and the Markdown report cannot disagree.
-Neither function touches a file, prints, or looks at the clock: the
-same spec always renders the same bytes.
+Neither function touches a file, prints, or looks at the clock:
+identical inputs evaluated in an identical environment render
+identical bytes. Both artifacts carry a provenance record — the
+SHA-256 of each input file's raw bytes plus the versions of quantrisk,
+Python, NumPy, and SciPy that computed the figures — which states
+exactly which inputs and environment that condition refers to. The
+record is deliberately free of timestamps, absolute paths, and machine
+names: nothing in it varies between two runs of the same inputs under
+the same versions, and nothing in it describes the machine.
 """
 
 from __future__ import annotations
 
 import math
+import platform
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
+import numpy
+import scipy
+
+import quantrisk
 from quantrisk.benchmark import BenchmarkComparison, compare_to_benchmark
 from quantrisk.io import SPEC_SCHEMA_VERSION, RunSpec
 from quantrisk.metrics import (
@@ -194,12 +206,37 @@ def _metrics_dict(metrics: AssetMetrics) -> dict[str, Any]:
     return payload
 
 
+def _provenance(spec: RunSpec) -> dict[str, str]:
+    """What went in and on top of what: input hashes and library versions.
+
+    The hashes are the SHA-256 digests :func:`~quantrisk.io.load_spec`
+    took of the two input files' raw bytes, so a verifier can recompute
+    them from the files alone. The versions are those of the package
+    and its declared dependencies — recorded whether or not this
+    particular run exercised every library, because reproducing the run
+    means reinstalling all of them. Nothing here is time-, path-, or
+    machine-dependent: two runs of the same inputs under the same
+    versions record identical provenance.
+    """
+
+    return {
+        "spec_sha256": spec.spec_sha256,
+        "prices_csv_sha256": spec.prices_csv_sha256,
+        "quantrisk_version": quantrisk.__version__,
+        "python_version": platform.python_version(),
+        "numpy_version": numpy.__version__,
+        "scipy_version": scipy.__version__,
+    }
+
+
 def results_payload(evaluation: SpecEvaluation) -> dict[str, Any]:
     """Every computed number as one JSON-ready dictionary.
 
     The Monte Carlo section keeps the seed, the run count, and the full
     sorted terminal values, so any summary figure can be recomputed and
-    checked. Nothing here reads the clock: the payload of a given spec
+    checked. The ``provenance`` block records the SHA-256 of each input
+    file and the versions that computed the numbers. Nothing here reads
+    the clock: the payload of given input bytes in a given environment
     is always the same.
     """
 
@@ -207,6 +244,7 @@ def results_payload(evaluation: SpecEvaluation) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": SPEC_SCHEMA_VERSION,
         "prices_csv": spec.prices_csv_name,
+        "provenance": _provenance(spec),
         "conventions": {
             "annualization_days": TRADING_DAYS_PER_YEAR,
             "sample_denominator": "n - 1",
@@ -527,12 +565,32 @@ def _monte_carlo_lines(evaluation: SpecEvaluation) -> list[str]:
     return lines
 
 
+def _provenance_lines(spec: RunSpec, source_name: str) -> list[str]:
+    record = _provenance(spec)
+    return [
+        (
+            "Recorded so this report can be verified: hash the input files with "
+            "SHA-256 and compare, then re-run under the versions stated below and "
+            "expect byte-identical artifacts."
+        ),
+        "",
+        f"- SHA-256 of `{source_name}`: `{record['spec_sha256']}`",
+        f"- SHA-256 of `{spec.prices_csv_name}`: `{record['prices_csv_sha256']}`",
+        (
+            f"- Computed by quantrisk {record['quantrisk_version']} on Python "
+            f"{record['python_version']} with numpy {record['numpy_version']} "
+            f"and scipy {record['scipy_version']}."
+        ),
+    ]
+
+
 def render_report(evaluation: SpecEvaluation, source_name: str) -> str:
     """Render the committee report as Markdown, deterministically.
 
     ``source_name`` is the spec's file name, cited so a reader knows
-    which document reproduces the numbers. No line of the report ever
-    contains a timestamp.
+    which document reproduces the numbers, and named again in the
+    closing provenance section beside its hash. No line of the report
+    ever contains a timestamp, an absolute path, or a machine name.
     """
 
     lines: list[str] = ["# Portfolio risk report"]
@@ -597,5 +655,9 @@ def render_report(evaluation: SpecEvaluation, source_name: str) -> str:
             "prices; treat them as indicative, not precise."
         )
     lines.append("- Nothing in this report is investment advice.")
+    lines.append("")
+    lines.append("## Provenance")
+    lines.append("")
+    lines.extend(_provenance_lines(evaluation.spec, source_name))
     lines.append("")
     return "\n".join(lines)

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import math
+import platform
 import re
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
+import numpy
+import scipy
+
+import quantrisk
 from quantrisk.cli import main
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -187,6 +193,101 @@ class ReportTests(SampleRunCase):
         # runs is asserted separately.
         self.assertIsNone(re.search(r"\d{2}:\d{2}", self.report))
         self.assertIsNone(re.search(r"\d{4}-\d{2}-\d{2}T", self.report))
+
+
+class ProvenanceTests(SampleRunCase):
+    def test_results_carry_the_provenance_block(self) -> None:
+        provenance = self.results["provenance"]
+        self.assertEqual(
+            sorted(provenance),
+            [
+                "numpy_version",
+                "prices_csv_sha256",
+                "python_version",
+                "quantrisk_version",
+                "scipy_version",
+                "spec_sha256",
+            ],
+        )
+        self.assertEqual(provenance["quantrisk_version"], quantrisk.__version__)
+        self.assertEqual(provenance["python_version"], platform.python_version())
+        self.assertEqual(provenance["numpy_version"], numpy.__version__)
+        self.assertEqual(provenance["scipy_version"], scipy.__version__)
+
+    def test_the_hashes_equal_an_independent_sha256_of_the_input_files(self) -> None:
+        provenance = self.results["provenance"]
+        self.assertEqual(
+            provenance["spec_sha256"],
+            hashlib.sha256(_SPEC.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            provenance["prices_csv_sha256"],
+            hashlib.sha256((_SPEC.parent / "prices.csv").read_bytes()).hexdigest(),
+        )
+
+    def test_the_report_ends_with_a_provenance_section(self) -> None:
+        self.assertIn("\n## Provenance\n", self.report)
+        provenance = self.results["provenance"]
+        self.assert_line(f"- SHA-256 of `portfolio-spec.json`: `{provenance['spec_sha256']}`")
+        self.assert_line(f"- SHA-256 of `prices.csv`: `{provenance['prices_csv_sha256']}`")
+        self.assert_line(
+            f"- Computed by quantrisk {provenance['quantrisk_version']} on Python "
+            f"{provenance['python_version']} with numpy {provenance['numpy_version']} "
+            f"and scipy {provenance['scipy_version']}."
+        )
+
+    def assert_line(self, line: str) -> None:
+        self.assertIn("\n" + line + "\n", self.report)
+
+
+class ProvenanceMutationTests(unittest.TestCase):
+    """The hashes follow the input bytes: same bytes, same hash; one byte, new hash."""
+
+    def setUp(self) -> None:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.directory = Path(holder.name)
+        (self.directory / "portfolio-spec.json").write_bytes(_SPEC.read_bytes())
+        (self.directory / "prices.csv").write_bytes((_SPEC.parent / "prices.csv").read_bytes())
+
+    def run_provenance(self, output: str) -> dict[str, str]:
+        code, _ = run_cli(
+            [
+                "run",
+                "--spec",
+                str(self.directory / "portfolio-spec.json"),
+                "--output",
+                str(self.directory / output),
+            ]
+        )
+        self.assertEqual(code, 0)
+        results = json.loads(
+            (self.directory / output / "results.json").read_text(encoding="utf-8")
+        )
+        provenance: dict[str, str] = results["provenance"]
+        return provenance
+
+    def test_rerunning_identical_inputs_yields_the_identical_provenance(self) -> None:
+        # The hashes depend on the file bytes alone — not on the
+        # directory the pair lives in, and not on the run.
+        first = self.run_provenance("first")
+        second = self.run_provenance("second")
+        self.assertEqual(first, second)
+        self.assertEqual(first["spec_sha256"], hashlib.sha256(_SPEC.read_bytes()).hexdigest())
+
+    def test_changing_one_byte_of_the_prices_csv_changes_its_hash(self) -> None:
+        before = self.run_provenance("before")
+        prices_path = self.directory / "prices.csv"
+        content = prices_path.read_text(encoding="utf-8")
+        self.assertIn("100.85", content)
+        prices_path.write_text(content.replace("100.85", "100.95", 1), encoding="utf-8")
+        after = self.run_provenance("after")
+        self.assertNotEqual(before["prices_csv_sha256"], after["prices_csv_sha256"])
+        self.assertEqual(before["spec_sha256"], after["spec_sha256"])
+        self.assertEqual(
+            after["prices_csv_sha256"],
+            hashlib.sha256(prices_path.read_bytes()).hexdigest(),
+        )
 
 
 class DeterminismTests(unittest.TestCase):

@@ -109,17 +109,28 @@ directory:
   covariance matrix's 2-norm `condition_number` (`null` when it is
   infinite) and a `conditioning_warning` that is `null` unless the
   matrix is ill-conditioned — see the numerical-conditioning section
-  of [methodology.md](methodology.md).
+  of [methodology.md](methodology.md). A `provenance` block records
+  what went in and on top of what: the SHA-256 of the spec file and
+  of the prices CSV (hashed over their raw bytes exactly as read,
+  before any parsing), plus the versions of quantrisk, Python, NumPy,
+  and SciPy that computed the numbers.
 - `report.md` — a short committee-style report: the holdings and
   conventions, the per-asset table, portfolio risk with
   contributions, the benchmark table, the stress tables, the Monte
   Carlo percentiles with the seed stated, and the caveats. When the
   covariance is ill-conditioned, the conditioning warning appears
-  under Caveats.
+  under Caveats. The report closes with a Provenance section stating
+  the same hashes and versions as the JSON block.
 
 Both artifacts render from one evaluation, so they cannot disagree,
-and neither embeds a timestamp: the same spec always produces
-byte-identical output, and the test suite asserts that equality.
+and neither embeds a timestamp, an absolute path, or a machine name.
+Byte-identity is conditional on exactly the two things the provenance
+records: identical input files evaluated under identical versions
+produce byte-identical output, and the test suite asserts that
+equality. Nothing time- or machine-dependent is allowed into the
+provenance itself, so recording it does not break the determinism it
+exists to verify — and it leaks nothing about who ran the engine, or
+where.
 
 The pair is published atomically as a pair. Both files are staged next
 to their targets, any existing pair is set aside, and only then are
@@ -136,6 +147,50 @@ staging or backup files beside the targets, which are safe to delete;
 and if the restore itself also fails (a second, independent
 filesystem error), the command says so and the previous artifacts
 survive as hidden `.*.backup.tmp` files.
+
+## Verifying a report
+
+The provenance block turns "trust me" into a five-minute check.
+Given a `results.json` (or the Provenance section of a `report.md`)
+and the spec-plus-CSV pair that supposedly produced it:
+
+1. **Hash the inputs.** Compute the SHA-256 of each file and compare
+   it with `spec_sha256` and `prices_csv_sha256`:
+
+   ```bash
+   python -c "import hashlib, pathlib, sys; \
+   print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())" \
+     portfolio-spec.json
+   ```
+
+   (`sha256sum` on Linux, `shasum -a 256` on macOS, and
+   `certutil -hashfile <file> SHA256` on Windows compute the same
+   digest.) A match proves these are byte-for-byte the input files of
+   the recorded run — not a re-export, not an edited copy.
+
+2. **Match the environment.** Compare `quantrisk_version`,
+   `python_version`, `numpy_version`, and `scipy_version` against the
+   environment you will re-run in:
+
+   ```bash
+   python -c "import platform, numpy, scipy, quantrisk; \
+   print(quantrisk.__version__, platform.python_version(), \
+   numpy.__version__, scipy.__version__)"
+   ```
+
+   The versions recorded are those of the package and its declared
+   dependencies, whether or not the particular run exercised every
+   library — reproducing the run means reinstalling all of them.
+
+3. **Re-run and diff.** `quantrisk run` on the verified pair in the
+   matching environment must reproduce both artifacts byte for byte;
+   any difference means a different input file or a different
+   environment, and steps 1 and 2 say which.
+
+If the hashes match but the versions differ, the artifacts may still
+agree — the engine's arithmetic is plain IEEE-754 double precision —
+but byte-identity is only *promised* under matching versions; treat a
+diff under mismatched versions as unverified, not as disproven.
 
 ## Conventions the numbers follow
 
