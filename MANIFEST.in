@@ -1,0 +1,15 @@
+# The sdist must be self-testing: an unpacked archive carries everything
+# `python -m unittest discover -s tests` needs, with no repository checkout.
+#   tests/        the suite itself (including tests/__init__.py, which the
+#                 default sdist rules silently drop)
+#   sample-data/  fixtures read by test_cli, test_feasibility, test_sample_data
+#   tools/        the seeded generator test_sample_data replays
+#   docs/         methodology and CLI references linked from README.md and
+#                 cited by the package's error messages
+graft tests
+graft sample-data
+graft tools
+graft docs
+
+global-exclude *.py[cod]
+global-exclude __pycache__

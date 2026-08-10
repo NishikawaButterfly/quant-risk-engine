@@ -102,3 +102,20 @@ jobs:
           .venv-wheel/bin/quantrisk run --spec sample-data/portfolio-spec.json --output "$RUNNER_TEMP/quantrisk-run"
           test -s "$RUNNER_TEMP/quantrisk-run/results.json"
           test -s "$RUNNER_TEMP/quantrisk-run/report.md"
+      - name: Unpack the sdist into a scratch directory
+        run: |
+          mkdir "$RUNNER_TEMP/sdist-audit"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist-audit"
+      - name: Install the sdist into a fresh environment
+        run: |
+          python -m venv "$RUNNER_TEMP/venv-sdist"
+          "$RUNNER_TEMP/venv-sdist/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/venv-sdist/bin/python" -m pip install dist/*.tar.gz
+      - name: Prove the unpacked sdist tests itself
+        run: |
+          # cwd is the unpacked archive, PYTHONPATH is unset, and the venv
+          # lives outside the workspace: nothing from the checkout is on the
+          # path, so a pass means the sdist alone carries a working suite.
+          cd "$RUNNER_TEMP"/sdist-audit/quant_risk_engine-*
+          "$RUNNER_TEMP/venv-sdist/bin/python" -c "import quantrisk; print(quantrisk.__file__); assert 'site-packages' in quantrisk.__file__"
+          "$RUNNER_TEMP/venv-sdist/bin/python" -m unittest discover -s tests
