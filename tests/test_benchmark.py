@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from quantrisk.benchmark import (
     MIN_COMPARISON_RETURNS,
     BenchmarkComparison,
+    _capture_ratio,
     compare_to_benchmark,
 )
 from quantrisk.portfolio import Portfolio
@@ -25,8 +26,8 @@ GRID = (
 
 # The hand-worked six-pair fixture from docs/methodology.md, as *returns*:
 # beta 3/2, daily alpha 0.005, tracking error sqrt(0.0504), information
-# ratio sqrt(126), up capture 5/3 over four rising days, and down capture
-# exactly 1 over exactly two falling days.
+# ratio sqrt(126), geometric up capture 1.700067 compounded over four
+# rising days, and geometric down capture 150/149 over two falling days.
 PORTFOLIO_RETURNS = (0.04, 0.00, 0.06, -0.03, 0.03, 0.02)
 BENCHMARK_RETURNS = (0.02, -0.01, 0.03, -0.02, 0.02, 0.02)
 
@@ -121,14 +122,28 @@ class HandTableTests(unittest.TestCase):
         self.assertEqual(round(result.information_ratio, 6), 11.224972)
 
     def test_capture_ratios_match_the_hand_table(self) -> None:
-        # Up: (0.15 / 4) / (0.09 / 4) = 5/3 over four rising days.
-        # Down: (-0.03 / 2) / (-0.03 / 2) = 1 over exactly two days.
+        # Geometric: each side's returns compound into one cumulative
+        # move before the ratio. Up, over the four rising days 1, 3,
+        # 5, 6:
+        #   p: 1.04 * 1.06 * 1.03 * 1.02 - 1
+        #      = 1.1024 * 1.03 * 1.02 - 1 = 1.135472 * 1.02 - 1
+        #      = 0.15818144
+        #   b: 1.02 * 1.03 * 1.02 * 1.02 - 1
+        #      = 1.0506 * 1.02 * 1.02 - 1 = 1.071612 * 1.02 - 1
+        #      = 0.09304424
+        #   up = 0.15818144 / 0.09304424 = 1.700067
+        # Down, over the two falling days 2 and 4:
+        #   p: 1.00 * 0.97 - 1 = -0.03
+        #   b: 0.99 * 0.98 - 1 = -0.0298
+        #   down = -0.03 / -0.0298 = 150/149 = 1.006711
+        # (Arithmetic means would say 5/3 and exactly 1.)
         result = _compare(PORTFOLIO_RETURNS, BENCHMARK_RETURNS)
         assert result.up_capture is not None
         assert result.down_capture is not None
-        self.assertAlmostEqual(result.up_capture, 5.0 / 3.0, places=15)
-        self.assertEqual(round(result.up_capture, 6), 1.666667)
-        self.assertAlmostEqual(result.down_capture, 1.0, places=15)
+        self.assertAlmostEqual(result.up_capture, 0.15818144 / 0.09304424, places=13)
+        self.assertEqual(round(result.up_capture, 6), 1.700067)
+        self.assertAlmostEqual(result.down_capture, 150.0 / 149.0, places=13)
+        self.assertEqual(round(result.down_capture, 6), 1.006711)
 
     def test_risk_free_rate_moves_alpha_by_beta_minus_one(self) -> None:
         # alpha(rf) = (mean_p - rf) - beta * (mean_b - rf), so a daily
@@ -212,9 +227,13 @@ class DateGridTests(unittest.TestCase):
         # beta = 0.09375 / 0.0625 = 1.5. alpha = 0.0625 - 1.5 * 0 = 0.0625.
         # Active returns (0.125, 0.125, 0.125, -0.125): sample variance
         # 0.046875 / 3 = 0.015625, stddev 0.125, TE = 0.125 * sqrt(252);
-        # IR = (0.0625 * 252) / TE = sqrt(63). The benchmark rose on the
-        # first and third pairs (up = 0.25 / 0.125 = 2) and fell on the
-        # other two (down = -0.125 / -0.125 = 1).
+        # IR = (0.0625 * 252) / TE = sqrt(63). Capture compounds each
+        # side: the benchmark rose on the first and third pairs
+        # (up = (1.25² - 1) / (1.125² - 1) = 0.5625 / 0.265625 = 36/17)
+        # and fell on the other two
+        # (down = (1.0 * 0.75 - 1) / (0.875² - 1) = -0.25 / -0.234375
+        # = 16/15). Every compounded product is dyadic and exact, so
+        # each ratio is one correctly rounded division.
         aligned_a, aligned_b, aligned_n = align((self.ASSET_A, self.ASSET_B, self.BENCHMARK))
         result = compare_to_benchmark(self.PORTFOLIO, (aligned_a, aligned_b), aligned_n)
         self.assertAlmostEqual(result.beta, 1.5, places=15)
@@ -223,8 +242,8 @@ class DateGridTests(unittest.TestCase):
         self.assertEqual(result.tracking_error, 0.125 * math.sqrt(252))
         assert result.information_ratio is not None
         self.assertAlmostEqual(result.information_ratio, math.sqrt(63), places=12)
-        self.assertEqual(result.up_capture, 2.0)
-        self.assertEqual(result.down_capture, 1.0)
+        self.assertEqual(result.up_capture, 36.0 / 17.0)
+        self.assertEqual(result.down_capture, 16.0 / 15.0)
 
     def test_a_benchmark_sharing_an_asset_name_is_rejected(self) -> None:
         # A benchmark named like a holding is the spec-level "benchmark
@@ -254,13 +273,28 @@ class PropertyTests(unittest.TestCase):
         # Dyadic benchmark returns and a portfolio returning exactly
         # double each day: every deviation doubles, so the covariance is
         # exactly twice the benchmark variance and beta is exactly 2.
+        # The compounded captures are *not* 2 — doubling every daily
+        # return is a linear act and compounding is not. Up, over the
+        # rising days (0.25, 0.5, 0.125, 0.25):
+        #   p: 1.5 * 2.0 * 1.25 * 1.5 - 1 = 5.625 - 1 = 4.625
+        #   b: 1.25 * 1.5 * 1.125 * 1.25 - 1 = 2.63671875 - 1
+        #      = 1.63671875
+        #   up = 4.625 / 1.63671875 = (37/8) / (419/256) = 1184/419
+        # Down, over the falling days (-0.125, -0.25):
+        #   p: 0.75 * 0.5 - 1 = -0.625
+        #   b: 0.875 * 0.75 - 1 = -0.34375
+        #   down = -0.625 / -0.34375 = (5/8) / (11/32) = 20/11
+        # Doubled daily gains compound to more than double the rise
+        # (2.825895 > 2); doubled daily losses compound to less than
+        # double the fall (1.818182 < 2). All intermediates are dyadic
+        # and exact, so each ratio is one correctly rounded division.
         benchmark_returns = (0.25, -0.125, 0.5, -0.25, 0.125, 0.25)
         doubled = tuple(2.0 * value for value in benchmark_returns)
         portfolio, sleeves = _twin_portfolio(_prices(doubled))
         result = compare_to_benchmark(portfolio, sleeves, _benchmark(_prices(benchmark_returns)))
         self.assertEqual(result.beta, 2.0)
-        self.assertEqual(result.up_capture, 2.0)
-        self.assertEqual(result.down_capture, 2.0)
+        self.assertEqual(result.up_capture, 1184.0 / 419.0)
+        self.assertEqual(result.down_capture, 20.0 / 11.0)
 
     def test_a_constant_shift_moves_alpha_and_nothing_else(self) -> None:
         # Adding c to every portfolio return moves the daily alpha by
@@ -322,16 +356,79 @@ class CaptureSideTests(unittest.TestCase):
     def test_zero_benchmark_days_belong_to_neither_side(self) -> None:
         # Benchmark returns (0.125, -0.125, 0.0, 0.25) against portfolio
         # returns (0.25, -0.375, 0.5, 0.5), all dyadic. The 0.0 benchmark
-        # day (portfolio 0.5) is excluded from both captures: up over
-        # days 1 and 4 ((0.25 + 0.5) / 2 over (0.125 + 0.25) / 2 = 2),
-        # down over day 2 alone (-0.375 / -0.125 = 3).
+        # day (portfolio 0.5) is excluded from both captures: up
+        # compounds days 1 and 4
+        # ((1.25 * 1.5 - 1) / (1.125 * 1.25 - 1) = 0.875 / 0.40625
+        # = 28/13), down is day 2 alone (-0.375 / -0.125 = 3 — a
+        # single-day side has nothing to compound, so both conventions
+        # coincide there).
         dates = GRID[:5]
         portfolio, sleeves = _twin_portfolio((64.0, 80.0, 50.0, 75.0, 112.5), dates)
         result = compare_to_benchmark(
             portfolio, sleeves, _benchmark((64.0, 72.0, 63.0, 63.0, 78.75), dates)
         )
-        self.assertEqual(result.up_capture, 2.0)
+        self.assertEqual(result.up_capture, 28.0 / 13.0)
         self.assertEqual(result.down_capture, 3.0)
+
+
+class CaptureConventionTests(unittest.TestCase):
+    """The geometric convention, pinned where the conventions split.
+
+    Capture compounds each side's returns into one cumulative move
+    before dividing. An arithmetic mean of the same days disagrees
+    with the compounded move exactly over runs of same-signed returns
+    — when capture matters most — so the fixture here is a run of
+    gains and a run of losses. Everything is dyadic: every compounded
+    product is exact in binary floating point and each asserted ratio
+    is one correctly rounded division.
+    """
+
+    def test_runs_of_gains_and_losses_compound_geometrically(self) -> None:
+        # Benchmark: three rising days, then three falling days.
+        #   b = (0.25, 0.25, 0.25, -0.25, -0.25, -0.25)
+        #   p = (0.50, 0.50, 0.50, -0.125, -0.125, -0.125)
+        # Up, compounded over days 1-3:
+        #   p: 1.5³ - 1 = 3.375 - 1 = 2.375            (= 19/8)
+        #   b: 1.25³ - 1 = 1.953125 - 1 = 0.953125     (= 61/64)
+        #   up = 2.375 / 0.953125 = 152/61 = 2.491803...
+        # Down, compounded over days 4-6:
+        #   p: 0.875³ - 1 = 0.669921875 - 1
+        #      = -0.330078125                          (= -169/512)
+        #   b: 0.75³ - 1 = 0.421875 - 1 = -0.578125    (= -37/64)
+        #   down = -0.330078125 / -0.578125 = 169/296 = 0.570945...
+        # Arithmetic means would say up = 0.5 / 0.25 = 2 and
+        # down = -0.125 / -0.25 = 0.5: the same six days, a different
+        # story on both sides.
+        portfolio_returns = (0.5, 0.5, 0.5, -0.125, -0.125, -0.125)
+        benchmark_returns = (0.25, 0.25, 0.25, -0.25, -0.25, -0.25)
+        result = _compare(portfolio_returns, benchmark_returns)
+        assert result.up_capture is not None
+        assert result.down_capture is not None
+        self.assertEqual(result.up_capture, 152.0 / 61.0)
+        self.assertEqual(round(result.up_capture, 6), 2.491803)
+        self.assertEqual(result.down_capture, 169.0 / 296.0)
+        self.assertEqual(round(result.down_capture, 6), 0.570946)
+        # The arithmetic values are ruled out to a coarse tolerance:
+        # this test fails against a mean-based implementation long
+        # before the digit assertions above are reached.
+        self.assertNotAlmostEqual(result.up_capture, 2.0, places=1)
+        self.assertNotAlmostEqual(result.down_capture, 0.5, places=1)
+
+    def test_a_benchmark_move_that_compounds_to_zero_is_rejected(self) -> None:
+        # Mathematically unreachable: rising factors all exceed 1 and
+        # falling factors all sit strictly inside (0, 1), so a nonempty
+        # side never compounds its benchmark move to a true zero. In
+        # floating point a sub-ulp return like ±1e-17 is nonzero — it
+        # selects a side — yet 1.0 ± 1e-17 rounds to exactly 1.0, so
+        # the side's move compounds to 0.0. Validated prices cannot
+        # emit such a return (the smallest nonzero move out of
+        # simple_returns keeps 1 + r representable), so the guard is
+        # exercised at the function boundary rather than through the
+        # public API.
+        with self.assertRaisesRegex(ValueError, "compound to exactly zero"):
+            _capture_ratio((0.01, -0.02), (1e-17, -0.5), rising=True)
+        with self.assertRaisesRegex(ValueError, "compound to exactly zero"):
+            _capture_ratio((0.01, -0.02), (0.5, -1e-17), rising=False)
 
 
 class ValidationTests(unittest.TestCase):

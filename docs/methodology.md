@@ -922,20 +922,52 @@ This is the tolerance's one degrade site; every other site rejects.
 
 ### Capture ratios
 
-Each side conditions on the benchmark's sign; a day the benchmark
-returned exactly zero belongs to neither. The benchmark rose on days
-1, 3, 5, 6 and fell on exactly two days, 2 and 4:
+Capture is **geometric**: each side's returns compound into one
+cumulative move, and the ratio divides the portfolio's compounded
+move by the benchmark's. Each side conditions on the benchmark's
+sign — a day the benchmark returned exactly zero belongs to neither —
+and both series always compound over the *same* days, the days the
+benchmark's sign selects:
 
 ```text
-up   = (0.15 / 4) / (0.09 / 4)   = 0.0375 / 0.0225  = 5/3 = 1.666667
-down = (-0.03 / 2) / (-0.03 / 2) = -0.015 / -0.015  = 1.0
+up   = (∏(1 + pᵢ) − 1) / (∏(1 + bᵢ) − 1)  over the days i with bᵢ > 0
+down = (∏(1 + pᵢ) − 1) / (∏(1 + bᵢ) − 1)  over the days i with bᵢ < 0
 ```
 
-The portfolio captured five-thirds of the benchmark's rises and
-exactly its falls — beta above one bought the upside without, on this
-fixture, extra downside. A benchmark that never fell has no falling
-days to measure, so that side's ratio is `None` rather than a
-fabricated number; the tests exercise both empty sides.
+Compounding, not an arithmetic mean of the days, is the convention
+because it is how the engine treats returns everywhere they aggregate
+across days — the backtest's annualized return, the stress windows'
+total return, the report's compounded value path. The two conventions
+disagree exactly over runs of same-signed days, which is when a
+capture ratio carries the most weight: over three +25% benchmark days
+against three +50% portfolio days, the mean-based ratio says 2 while
+the compounded one says 152/61 ≈ 2.491803 (`tests/test_benchmark.py`
+pins that fixture on both sides). Before 0.1.0 the engine used the
+arithmetic per-day means here; the convention change moves both
+capture figures on any input with a multi-day run.
+
+On the hand-worked fixture the benchmark rose on days 1, 3, 5, 6 and
+fell on exactly two days, 2 and 4:
+
+```text
+up   = (1.04 × 1.06 × 1.03 × 1.02 − 1) / (1.02 × 1.03 × 1.02 × 1.02 − 1)
+     = 0.15818144 / 0.09304424 = 1.700067
+down = (1.00 × 0.97 − 1) / (0.99 × 0.98 − 1)
+     = −0.03 / −0.0298 = 150/149 = 1.006711
+```
+
+The portfolio compounded 1.700067 times the benchmark's rise and
+1.006711 times its fall — beta above one bought the upside with, on
+this fixture, barely any extra downside. A benchmark that never fell
+has no falling days to measure, so that side's ratio is `None` rather
+than a fabricated number; the tests exercise both empty sides. A
+nonempty side can never compound its benchmark move to a true zero —
+rising factors all exceed one, falling factors all sit strictly inside
+(0, 1) — but in floating point a sub-ulp return, one that `1 + r`
+rounds away entirely, can; the engine rejects that division rather
+than fabricating a ratio. Validated prices cannot emit such a return,
+so the guard is purely defensive, and it rejects rather than degrades:
+the information ratio stays the tolerance story's one degrade site.
 
 ## Stress scenarios
 
