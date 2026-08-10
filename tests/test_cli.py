@@ -148,6 +148,11 @@ class ReportTests(SampleRunCase):
         self.assert_line("| AAA | 50.00% | 35.52% |")
         self.assert_line("| CCC | 20.00% | 35.33% |")
 
+    def test_the_capture_rows_label_their_convention(self) -> None:
+        self.assertIn("| Up capture (geometric) |", self.report)
+        self.assertIn("| Down capture (geometric) |", self.report)
+        self.assertIn("Capture ratios are geometric", self.report)
+
     def test_the_stress_tables_render(self) -> None:
         self.assert_line(
             "| spring-drawdown | 2025-03-03 | 2025-04-30 | 43 | -5.92% | 12.54% | 8.26% |"

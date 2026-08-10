@@ -417,7 +417,8 @@ def _benchmark_lines(evaluation: SpecEvaluation) -> list[str]:
             f"{_percent(benchmark.total_return)} over the same days at "
             f"{_percent(benchmark.annualized_volatility)} annualized volatility. "
             "Alpha is the arithmetic CAPM residual over excess returns; its annual "
-            "figure is the daily one times 252, not compounded."
+            "figure is the daily one times 252, not compounded. Capture ratios "
+            "are geometric: each side's returns are compounded before dividing."
         ),
         "",
     ]
@@ -428,11 +429,11 @@ def _benchmark_lines(evaluation: SpecEvaluation) -> list[str]:
         ("Tracking error", _percent(comparison.tracking_error)),
         ("Information ratio", _optional_number(comparison.information_ratio)),
         (
-            "Up capture",
+            "Up capture (geometric)",
             "—" if comparison.up_capture is None else _number(comparison.up_capture),
         ),
         (
-            "Down capture",
+            "Down capture (geometric)",
             "—" if comparison.down_capture is None else _number(comparison.down_capture),
         ),
     ]

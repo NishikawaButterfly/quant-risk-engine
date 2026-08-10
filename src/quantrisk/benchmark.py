@@ -42,13 +42,23 @@ Conventions, stated once:
   legitimate comparison whose other statistics remain meaningful.
   This is the tolerance's one *degrade* site; every other site
   rejects.
-* **Capture ratios** condition on the benchmark's sign. Up capture is
-  the mean portfolio return over the days the benchmark rose, divided
-  by the mean benchmark return over those same days; down capture is
-  the same over the days the benchmark fell. Days the benchmark
-  returned exactly zero belong to neither side. A side with no days
-  has no ratio and is reported as ``None`` — a benchmark that never
-  fell simply has no down capture to report.
+* **Capture ratios** are geometric and condition on the benchmark's
+  sign. Each side's returns compound into one cumulative move —
+  ``prod(1 + r) - 1`` — and up capture divides the portfolio's
+  compounded move over the days the benchmark rose by the benchmark's
+  own compounded move over those same days; down capture is the same
+  over the days the benchmark fell. Days the benchmark returned
+  exactly zero belong to neither side. Compounding, not an arithmetic
+  mean of the days, is the convention because it is how the engine
+  treats returns everywhere they aggregate across days (the
+  backtest's annualized return, the stress windows' total return, the
+  report's value path), and the two conventions disagree exactly over
+  runs of same-signed days — when capture matters most. A side with
+  no days has no ratio and is reported as ``None`` — a benchmark that
+  never fell simply has no down capture to report. A nonempty side
+  whose benchmark move compounds to exactly zero — reachable only
+  when a sub-ulp return rounds away in ``1 + r``, never from
+  validated prices — is rejected rather than divided by.
 """
 
 from __future__ import annotations
@@ -83,7 +93,9 @@ class BenchmarkComparison:
     annualized. ``information_ratio`` is ``None`` exactly when the
     tracking error is zero: the active return is then constant and the
     ratio's denominator vanishes. ``up_capture`` (``down_capture``) is
-    ``None`` exactly when the benchmark never rose (never fell), so
+    the *geometric* capture ratio — the portfolio's compounded return
+    over the benchmark's, on the days the benchmark rose (fell) — and
+    is ``None`` exactly when the benchmark never rose (never fell), so
     that side of the market has no days to measure.
     """
 
@@ -135,11 +147,18 @@ def _sample_covariance(first: tuple[float, ...], second: tuple[float, ...]) -> f
 def _capture_ratio(
     portfolio: tuple[float, ...], benchmark: tuple[float, ...], *, rising: bool
 ) -> float | None:
-    """Mean portfolio return over mean benchmark return on one side.
+    """Compounded portfolio move over compounded benchmark move, one side.
 
-    ``rising`` selects the days the benchmark rose (fell when false);
-    zero-return benchmark days belong to neither side. A side with no
-    days has nothing to measure and yields ``None``.
+    The geometric convention: each side's returns compound into one
+    cumulative return, ``prod(1 + r) - 1``, and the ratio divides the
+    portfolio's by the benchmark's. ``rising`` selects the days the
+    benchmark rose (fell when false); zero-return benchmark days belong
+    to neither side. A side with no days has nothing to measure and
+    yields ``None``. Rising factors all exceed one and falling factors
+    all sit strictly inside (0, 1), so a nonempty side's benchmark move
+    is never truly zero; only a sub-ulp return — one that ``1.0 + move``
+    rounds away entirely — can compound the denominator to exactly
+    zero, and that is rejected rather than divided by.
     """
 
     pairs = [
@@ -149,9 +168,15 @@ def _capture_ratio(
     ]
     if not pairs:
         return None
-    mean_portfolio = math.fsum(gain for gain, _ in pairs) / len(pairs)
-    mean_benchmark = math.fsum(move for _, move in pairs) / len(pairs)
-    return mean_portfolio / mean_benchmark
+    portfolio_move = math.prod(1.0 + gain for gain, _ in pairs) - 1.0
+    benchmark_move = math.prod(1.0 + move for _, move in pairs) - 1.0
+    if benchmark_move == 0.0:
+        side = "rose" if rising else "fell"
+        raise ValueError(
+            f"benchmark returns compound to exactly zero over the days the benchmark {side}; "
+            "the capture ratio divides by that compounded move and is undefined"
+        )
+    return portfolio_move / benchmark_move
 
 
 def compare_to_benchmark(
