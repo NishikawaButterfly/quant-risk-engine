@@ -74,9 +74,12 @@ under stated conventions — that is the whole product.
 - A CLI and reproducible reports: one JSON spec (prices CSV, weights,
   optional risk-free rate, benchmark, stress, and seeded Monte Carlo)
   drives `quantrisk run`, which writes `results.json` and a
-  committee-style `report.md` with no timestamp anywhere — the same
-  spec always produces byte-identical artifacts, and a test asserts
-  it. `quantrisk validate` checks a spec without computing.
+  committee-style `report.md` with no timestamp anywhere — identical
+  inputs evaluated under identical library versions produce
+  byte-identical artifacts, a test asserts it, and each artifact
+  records the provenance (input SHA-256 hashes plus the quantrisk,
+  Python, NumPy, and SciPy versions) that makes the condition
+  checkable. `quantrisk validate` checks a spec without computing.
 
 Each convention — the 252-day annualization, the n − 1 volatility
 denominator, the Sortino target, the interpolated percentile, the sign
@@ -105,10 +108,13 @@ The run writes `results.json`, with every computed number plus the
 Monte Carlo seed and run count, and `report.md`, a short report meant
 to be read in a few minutes: the holdings and conventions, per-asset
 and portfolio risk with contributions, the benchmark comparison, the
-stress tables, the Monte Carlo percentiles, and the caveats. Neither
-artifact embeds a timestamp, so the same spec always produces
-byte-identical output. The spec format is documented in
-[docs/cli.md](docs/cli.md).
+stress tables, the Monte Carlo percentiles, and the caveats. Both
+artifacts record their provenance — the SHA-256 of each input file and
+the versions of quantrisk, Python, NumPy, and SciPy that produced them
+— and neither embeds a timestamp, so identical inputs under identical
+versions produce byte-identical output, and the provenance says
+whether that condition holds. The spec format and the verification
+recipe are documented in [docs/cli.md](docs/cli.md).
 
 The library remains directly usable:
 

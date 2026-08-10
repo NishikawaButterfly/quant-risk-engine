@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import tempfile
 import unittest
@@ -108,6 +109,29 @@ class RoundTripTests(SpecCase):
     def test_the_benchmark_column_stays_out_of_the_asset_series(self) -> None:
         spec = load_spec(self.write_spec(full_payload()))
         self.assertEqual([item.name for item in spec.asset_series], ["AAA", "BBB"])
+
+
+class InputHashTests(SpecCase):
+    def test_load_records_the_sha256_of_both_raw_input_files(self) -> None:
+        spec_path = self.write_spec(minimal_payload())
+        spec = load_spec(spec_path)
+        self.assertEqual(spec.spec_sha256, hashlib.sha256(spec_path.read_bytes()).hexdigest())
+        self.assertEqual(
+            spec.prices_csv_sha256,
+            hashlib.sha256((self.directory / "prices.csv").read_bytes()).hexdigest(),
+        )
+
+    def test_the_hash_covers_the_raw_bytes_including_a_bom(self) -> None:
+        # The digest is taken from the bytes as read, before decoding:
+        # a UTF-8 BOM changes the file, so it changes the hash, even
+        # though the parsed spec is identical either way.
+        spec_path = self.write_spec(minimal_payload())
+        plain = load_spec(spec_path)
+        (self.directory / "prices.csv").write_bytes(b"\xef\xbb\xbf" + CSV.encode("utf-8"))
+        with_bom = load_spec(spec_path)
+        self.assertEqual(plain.asset_series, with_bom.asset_series)
+        self.assertNotEqual(plain.prices_csv_sha256, with_bom.prices_csv_sha256)
+        self.assertEqual(plain.spec_sha256, with_bom.spec_sha256)
 
 
 class DocumentErrorTests(SpecCase):
