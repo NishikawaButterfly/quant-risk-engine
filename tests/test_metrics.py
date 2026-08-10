@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 import unittest
 
 from quantrisk._validation import MIN_VOLATILITY
@@ -140,6 +141,102 @@ class ConventionTests(unittest.TestCase):
         self.assertEqual(result.peak_date, "2026-01-09")
         self.assertEqual(result.trough_date, "2026-01-12")
         self.assertEqual(result.depth, 1.0 - 99.0 / 110.0)
+
+
+class TailBoundaryConventionTests(unittest.TestCase):
+    """Pin the sign and tail-boundary conventions digit for digit.
+
+    Textbooks and libraries disagree on two silent choices: the sign a
+    reported VaR carries, and what happens at the quantile boundary
+    when the tail does not divide evenly into the sample. Each fixture
+    below is hand-calculated under the competing conventions, which
+    give different answers, and the assertions pin exactly which one
+    this engine produces. The conventions are stated in prose in
+    docs/methodology.md ("VaR and CVaR conventions").
+    """
+
+    def test_the_boundary_observation_is_included_when_the_rank_is_exact(self) -> None:
+        # Doc fixture, sorted: -0.03, -0.02, 0.01, 0.02, 0.04. At 75%
+        # confidence the target rank 0.25 * 4 = 1.0 lands exactly on
+        # the order statistic -0.02, so the quantile is -0.02 (VaR
+        # 0.020) and the boundary observation itself is the whole
+        # disagreement. Three textbook treatments of the 25% tail:
+        #   include the boundary: mean(-0.03, -0.02) = -0.025 -> CVaR 0.025
+        #   exclude the boundary: mean(-0.03)        = -0.030 -> CVaR 0.030
+        #   Acerbi-Tasche tail expectation, n * alpha = 5 * 0.25 = 1.25:
+        #     (0.03 + 0.25 * 0.02) / 1.25 = 0.035 / 1.25     -> CVaR 0.028
+        # This engine includes the boundary observation.
+        self.assertEqual(historical_var(RETURNS, confidence=0.75), 0.02)
+        value = historical_cvar(RETURNS, confidence=0.75)
+        self.assertAlmostEqual(value, 0.025, places=15)
+        self.assertNotAlmostEqual(value, 0.030, places=9)
+        self.assertNotAlmostEqual(value, 0.028, places=9)
+
+    def test_an_uneven_tail_is_cut_at_the_interpolated_quantile(self) -> None:
+        # Six returns, sorted: -0.04, -0.02, -0.01, 0.01, 0.02, 0.03.
+        # At 75% confidence the tail holds n * alpha = 6 * 0.25 = 1.5
+        # observations — it does not divide evenly into the sample. The
+        # rank is 0.25 * 5 = 1.25, so the quantile interpolates to
+        # -0.02 + 0.25 * (-0.01 - -0.02) = -0.0175 and VaR is 0.0175.
+        # The competing conventions:
+        #   this engine, mean of returns at or below -0.0175:
+        #     mean(-0.04, -0.02) = -0.03                     -> CVaR 0.030
+        #   worst floor(n * alpha) = 1 observation only:
+        #     mean(-0.04)                                    -> CVaR 0.040
+        #   Acerbi-Tasche tail expectation:
+        #     (0.04 + 0.5 * 0.02) / 1.5 = 0.05 / 1.5         -> CVaR 0.0333...
+        returns = (0.01, -0.04, 0.02, -0.02, 0.03, -0.01)
+        self.assertAlmostEqual(historical_var(returns, confidence=0.75), 0.0175, places=15)
+        value = historical_cvar(returns, confidence=0.75)
+        self.assertAlmostEqual(value, 0.03, places=15)
+        self.assertNotAlmostEqual(value, 0.04, places=9)
+        self.assertNotAlmostEqual(value, 0.05 / 1.5, places=9)
+
+    def test_the_tail_is_a_quantile_cut_not_a_rounded_count_of_observations(self) -> None:
+        # Eight returns, sorted: -0.05, -0.03, -0.01, 0.0, 0.01, 0.02,
+        # 0.03, 0.04, at 72% confidence (alpha = 0.28). A count-based
+        # scheme averaging the worst ceil(n * alpha) = ceil(2.24) = 3
+        # observations reports mean(-0.05, -0.03, -0.01) = -0.03, CVaR
+        # 0.030. This engine instead cuts at the interpolated quantile:
+        # rank 0.28 * 7 = 1.96, quantile -0.03 + 0.96 * 0.02 = -0.0108,
+        # and only -0.05 and -0.03 lie at or below it, so CVaR is
+        # mean(-0.05, -0.03) negated: 0.040.
+        returns = (0.01, -0.05, 0.03, -0.01, 0.04, 0.0, -0.03, 0.02)
+        self.assertAlmostEqual(historical_var(returns, confidence=0.72), 0.0108, places=15)
+        value = historical_cvar(returns, confidence=0.72)
+        self.assertAlmostEqual(value, 0.04, places=15)
+        self.assertNotAlmostEqual(value, 0.03, places=9)
+
+    def test_losses_carry_positive_sign_and_gains_negative(self) -> None:
+        # Sign convention: a loss is reported as a positive number, so
+        # a negative VaR or CVaR means even the tail gained. All-gain
+        # fixture at 80%: rank 0.2 * 4 = 0.8, quantile 0.01 + 0.8 *
+        # 0.01 = 0.018, VaR = -0.018. The tail at or below 0.018 is
+        # {0.01} alone, so CVaR = -0.01.
+        gains = (0.01, 0.02, 0.03, 0.04, 0.05)
+        self.assertAlmostEqual(historical_var(gains, confidence=0.80), -0.018, places=15)
+        self.assertAlmostEqual(historical_cvar(gains, confidence=0.80), -0.01, places=15)
+        # The doc fixture's 95% tail is a loss, so every VaR flavour
+        # reports a positive number there.
+        self.assertGreater(historical_var(RETURNS, confidence=0.95), 0.0)
+        self.assertGreater(historical_cvar(RETURNS, confidence=0.95), 0.0)
+        self.assertGreater(parametric_var(RETURNS, confidence=0.95), 0.0)
+
+    def test_cvar_never_falls_below_var_on_seeded_random_samples(self) -> None:
+        # Property guard for boundary consistency between the two
+        # historical functions: both cut at the same interpolated
+        # quantile, the CVaR tail is bounded above by that quantile, so
+        # its mean cannot exceed the quantile and the reported CVaR can
+        # never fall below the reported VaR.
+        rng = random.Random(20260809)  # noqa: S311 - reproducible fixture, not cryptography
+        for _ in range(25):
+            count = rng.randint(2, 40)
+            returns = tuple(rng.uniform(-0.1, 0.1) for _ in range(count))
+            for confidence in (0.5, 0.75, 0.9, 0.95, 0.99):
+                self.assertGreaterEqual(
+                    historical_cvar(returns, confidence=confidence),
+                    historical_var(returns, confidence=confidence),
+                )
 
 
 class ValidationTests(unittest.TestCase):

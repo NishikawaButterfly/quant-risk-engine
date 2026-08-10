@@ -228,6 +228,50 @@ at or below that quantile. Only −0.03 lies at or below −0.028, so the
 never exceed the quantile, so CVaR never falls below VaR at the same
 confidence.
 
+### VaR and CVaR conventions
+
+Two conventions are implicit in any reported VaR, and textbooks and
+libraries make different choices, so both are stated here explicitly.
+
+**Sign.** Losses are reported as positive numbers: a 95% VaR of 0.028
+means a 2.8% loss. A negative VaR or CVaR means even that percentile
+of days was a gain. Libraries that report the signed return quantile
+instead produce our numbers negated.
+
+**Quantile method and the tail boundary.** The percentile is Hyndman
+and Fan's type 7 — target rank `(1 − c) × (n − 1)` over zero-based
+order statistics, fractional ranks interpolated linearly — which is
+`numpy.percentile`'s default and R's `quantile(type = 7)`. CVaR is
+then a discrete tail average: the plain mean of every observed return
+at or below that interpolated quantile, negated. The boundary
+observation is included — when the target rank lands exactly on an
+order statistic, that return enters the average — and no fractional
+weight is applied inside the tail, so this is not the Acerbi–Tasche
+interpolated tail expectation.
+
+The boundary choice changes the answer whenever the tail does not
+divide evenly into the sample. On the five-return fixture at 75%
+confidence the rank 0.25 × 4 = 1.0 lands exactly on −0.02, so the
+quantile is −0.02 and VaR = 0.020; the 25% tail holds 5 × 0.25 = 1.25
+observations, and the conventions disagree about the boundary return
+−0.02:
+
+```text
+include the boundary (this engine):  mean(-0.03, -0.02) = -0.025   CVaR = 0.025
+exclude the boundary:                mean(-0.03)        = -0.030   CVaR = 0.030
+Acerbi-Tasche tail expectation:      (0.03 + 0.25 * 0.02) / 1.25   CVaR = 0.028
+```
+
+This engine reports 0.025, and the test suite asserts these digits on
+fixtures where the conventions disagree. A reader comparing our
+figures against another library should expect the CVaR to differ
+whenever `(1 − c) × n` is not an integer — many implementations
+average a rounded count of worst observations (⌊(1 − c) × n⌋ or
+⌈(1 − c) × n⌉) or weight the boundary observation fractionally, and
+R alone offers nine quantile types — while the VaR itself matches any
+library using type 7 and differs in the last interpolation step
+otherwise.
+
 ## Parametric (normal) VaR
 
 Fit a normal distribution by the sample mean and sample standard

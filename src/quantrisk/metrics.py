@@ -168,8 +168,9 @@ def _interpolated_percentile(sorted_values: tuple[float, ...], level: float) -> 
 
     The sorted values take ranks 0 through n - 1; the target rank for
     fraction ``level`` is ``level * (n - 1)``, and a fractional rank
-    interpolates linearly between its two neighbours. This is the same
-    convention NumPy calls ``linear``.
+    interpolates linearly between its two neighbours. This is
+    Hyndman and Fan's type 7 — the convention NumPy calls ``linear``
+    and applies by default.
     """
 
     rank = level * (len(sorted_values) - 1)
@@ -184,10 +185,14 @@ def _interpolated_percentile(sorted_values: tuple[float, ...], level: float) -> 
 def historical_var(returns: Sequence[float], confidence: float) -> float:
     """Historical value-at-risk as a positive loss fraction.
 
-    At confidence ``c`` the VaR is the negated ``(1 - c)`` interpolated
-    percentile of the observed returns: the loss that the worst
-    ``(1 - c)`` share of observed days reached or exceeded. A negative
-    result means even that percentile was a gain.
+    At confidence ``c`` the VaR is the negated ``(1 - c)`` percentile
+    of the observed returns under the Hyndman-Fan type 7 rule of
+    :func:`_interpolated_percentile`: the loss that the worst
+    ``(1 - c)`` share of observed days reached or exceeded. Sign
+    convention: losses are positive, so a negative result means even
+    that percentile was a gain. Both conventions, and how they compare
+    with other libraries, are stated under "VaR and CVaR conventions"
+    in ``docs/methodology.md``.
     """
 
     values = _validate_returns(returns)
@@ -198,10 +203,17 @@ def historical_var(returns: Sequence[float], confidence: float) -> float:
 def historical_cvar(returns: Sequence[float], confidence: float) -> float:
     """Historical conditional value-at-risk (expected shortfall).
 
-    The negated mean of every observed return at or below the
-    ``(1 - c)`` interpolated percentile. At least the worst observation
+    A discrete tail average: the negated plain mean of every observed
+    return at or below the ``(1 - c)`` Hyndman-Fan type 7 percentile —
+    the same quantile :func:`historical_var` negates. Boundary rule:
+    when the target rank lands exactly on an order statistic, that
+    boundary observation is included in the average; no fractional
+    weight is applied inside the tail (this is not the Acerbi-Tasche
+    interpolated tail expectation). At least the worst observation
     always qualifies, and the result is never below the historical VaR
-    at the same confidence.
+    at the same confidence. Sign convention: losses are positive, as in
+    :func:`historical_var`. Both conventions are stated under "VaR and
+    CVaR conventions" in ``docs/methodology.md``.
     """
 
     values = _validate_returns(returns)
@@ -216,9 +228,12 @@ def parametric_var(returns: Sequence[float], confidence: float) -> float:
 
     Fits a normal distribution by the sample mean and sample standard
     deviation and negates its ``(1 - c)`` quantile:
-    ``-(mean + z * stddev)`` with ``z = norm.ppf(1 - c)``. Daily equity
-    returns have fatter tails than a normal, so at high confidences this
-    understates tail losses; compare it with the historical figures.
+    ``-(mean + z * stddev)`` with ``z = norm.ppf(1 - c)``. The sign
+    convention matches :func:`historical_var`: losses are positive
+    ("VaR and CVaR conventions" in ``docs/methodology.md``). Daily
+    equity returns have fatter tails than a normal, so at high
+    confidences this understates tail losses; compare it with the
+    historical figures.
     """
 
     values = _validate_returns(returns)
