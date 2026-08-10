@@ -4,7 +4,7 @@ import math
 import unittest
 from collections.abc import Sequence
 
-from quantrisk.backtest import PolicyWindow, run_backtest
+from quantrisk.backtest import PolicyWindow, RebalanceRecord, run_backtest
 from quantrisk.metrics import annualized_volatility, max_drawdown
 from quantrisk.portfolio import Portfolio
 from quantrisk.series import PriceSeries
@@ -16,10 +16,14 @@ DATES_8 = (*DATES_7, "2026-01-14")
 # The hand-worked cost fixture from docs/methodology.md: A jumps 50%
 # on the third day and B never moves, so a 50/50 policy rebalanced
 # every 2 trading days drifts to exactly (0.6, 0.4) before its second
-# decision. With a 2% cost rate on turnover the value path is
-# 1000, 980, 1225, 1220.1, 1220.1.
+# decision. With a 2% cost rate on two-sided turnover the value path
+# is 1000, 980, 1225, 1220.1, 1220.1.
 COST_A = PriceSeries("AAA", DATES_5, (100.0, 100.0, 150.0, 150.0, 150.0))
 COST_B = PriceSeries("BBB", DATES_5, (100.0, 100.0, 100.0, 100.0, 100.0))
+
+# The turnover-convention fixture: A flat too, so weights never drift
+# and each rebalance's trade is exactly target minus previous target.
+FLAT_A = PriceSeries("AAA", DATES_5, (100.0, 100.0, 100.0, 100.0, 100.0))
 
 # The mean-reverting fixture for the peeking test: A's returns come in
 # two-day blocks (+10%, +10%, -10%, -10%, ...) while B never moves, so
@@ -47,6 +51,20 @@ class ConstantWeights:
 
     def __call__(self, window: PolicyWindow) -> tuple[float, ...]:
         return self.weights
+
+
+class ScriptedWeights:
+    """Plays back a fixed sequence of targets, one per rebalance."""
+
+    def __init__(self, targets: Sequence[tuple[float, ...]], min_history_days: int = 1) -> None:
+        self.targets = list(targets)
+        self.min_history_days = min_history_days
+        self.calls = 0
+
+    def __call__(self, window: PolicyWindow) -> tuple[float, ...]:
+        target = self.targets[self.calls]
+        self.calls += 1
+        return target
 
 
 class RecordingEqualWeights:
@@ -136,12 +154,12 @@ class HandTableTests(unittest.TestCase):
         self.assertEqual(first.date, "2026-01-06")
         self.assertEqual(first.drifted_weights, (0.0, 0.0))
         self.assertEqual(first.target_weights, (0.5, 0.5))
-        self.assertEqual(first.turnover, 1.0)
+        self.assertEqual(first.two_sided_turnover, 1.0)
         self.assertEqual(first.cost, 20.0)
         self.assertEqual(second.date, "2026-01-08")
         self.assertEqual(second.drifted_weights, (0.6, 0.4))
         self.assertEqual(second.target_weights, (0.5, 0.5))
-        self.assertAlmostEqual(second.turnover, 0.2, places=12)
+        self.assertAlmostEqual(second.two_sided_turnover, 0.2, places=12)
         self.assertAlmostEqual(second.cost, 4.9, places=12)
         self.assertEqual(round(second.cost, 6), 4.9)
 
@@ -170,6 +188,57 @@ class HandTableTests(unittest.TestCase):
             initial_value=1000.0,
         )
         self.assertEqual(result.rebalances[1].drifted_weights, (0.6, 0.4))
+
+
+class TurnoverConventionTests(unittest.TestCase):
+    """The two-period hand example that fixes which turnover this is.
+
+    Prices never move, so weights do not drift and the second trade is
+    exactly (0.6, 0.4) -> (0.4, 0.6). The one-sided convention
+    (purchases only) gives |0.6 - 0.4| = 0.2 for that trade; the
+    two-sided convention (purchases plus sales) gives
+    |0.4 - 0.6| + |0.6 - 0.4| = 0.4. The engine reports 0.4, which is
+    why the field is named ``two_sided_turnover``.
+    """
+
+    def run_flat_fixture(self) -> tuple[RebalanceRecord, RebalanceRecord]:
+        result = run_backtest(
+            (FLAT_A, COST_B),
+            ScriptedWeights([(0.6, 0.4), (0.4, 0.6)]),
+            schedule=2,
+            cost_rate=0.01,
+            initial_value=1000.0,
+        )
+        first, second = result.rebalances
+        return first, second
+
+    def test_the_engine_reports_the_two_sided_value(self) -> None:
+        # Out of cash: drifted (0, 0), target (0.6, 0.4), two-sided
+        # turnover |0.6 - 0| + |0.4 - 0| = 1, cost 0.01 * 1 * 1000 = 10,
+        # leaving 990. Prices are flat, so the second decision sees
+        # drifted weights of exactly (0.6, 0.4).
+        first, second = self.run_flat_fixture()
+        self.assertEqual(first.two_sided_turnover, 1.0)
+        self.assertEqual(first.cost, 10.0)
+        self.assertEqual(second.drifted_weights, (0.6, 0.4))
+        self.assertEqual(second.target_weights, (0.4, 0.6))
+        # Two-sided: |0.4 - 0.6| + |0.6 - 0.4| = 0.2 + 0.2 = 0.4. The
+        # one-sided value would be 0.2 - asserting 0.4, and explicitly
+        # not 0.2, pins the convention against the factor-of-two
+        # ambiguity the field name resolves.
+        self.assertAlmostEqual(second.two_sided_turnover, 0.4, places=12)
+        self.assertEqual(round(second.two_sided_turnover, 12), 0.4)
+        self.assertNotAlmostEqual(second.two_sided_turnover, 0.2, places=6)
+
+    def test_the_cost_is_the_rate_times_the_two_sided_turnover(self) -> None:
+        # cost = cost_rate * two_sided_turnover * pre-trade value on the
+        # same trade: 0.01 * 0.4 * 990 = 3.96 - not the 1.98 a one-sided
+        # reading of the field would predict.
+        _, second = self.run_flat_fixture()
+        self.assertEqual(second.cost, 0.01 * second.two_sided_turnover * 990.0)
+        self.assertAlmostEqual(second.cost, 3.96, places=12)
+        self.assertEqual(round(second.cost, 12), 3.96)
+        self.assertNotAlmostEqual(second.cost, 1.98, places=6)
 
 
 class LookAheadTests(unittest.TestCase):
@@ -567,8 +636,9 @@ class ValidationTests(unittest.TestCase):
             run_backtest((COST_A, COST_B), ConstantWeights((True, 0.0)), schedule=1, cost_rate=0.0)
 
     def test_a_cost_that_would_consume_the_portfolio_is_rejected(self) -> None:
-        # Weights (5, -4) sum to one but carry turnover 9 out of cash;
-        # at a 20% cost rate the charge is 1.8 times the whole value.
+        # Weights (5, -4) sum to one but carry two-sided turnover 9
+        # out of cash; at a 20% cost rate the charge is 1.8 times the
+        # whole value.
         with self.assertRaisesRegex(ValueError, "consume the whole portfolio"):
             run_backtest(
                 (COST_A, COST_B),
