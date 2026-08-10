@@ -741,12 +741,30 @@ flat at the initial value until the first rebalance day.
 ### Transaction costs, worked by hand
 
 At each rebalance the drifted (pre-trade) weights are compared with
-the policy's targets. Turnover is the weight-space distance
-`sum |target − drifted|` and the charge is
-`cost_rate × turnover × pre-trade value`. The first rebalance out of
-cash has drifted weights of zero, so a fully invested long-only target
-carries turnover 1 and costs `cost_rate × value` — it is charged like
-any other rebalance, not waived.
+the policy's targets. The engine reports **two-sided** turnover, and
+the rebalance-record field carries the convention in its name. For
+target weights `t_i` and drifted weights `d_i` over the assets:
+
+```text
+two_sided_turnover = Σ_i |t_i − d_i|
+cost               = cost_rate × two_sided_turnover × pre-trade value
+```
+
+Both sides of every trade count: a weight bought and a weight sold
+each add to the sum. The one-sided convention counts purchases only,
+`Σ_i max(t_i − d_i, 0)`, which is exactly half the two-sided figure
+whenever the pre-trade and target weights sum to the same total — so
+turnover or cost figures compared against a tool that reports
+one-sided turnover (or quotes costs per side) differ by a factor of
+two unless the conventions are matched first. Moving (0.6, 0.4) to
+(0.4, 0.6) is two-sided turnover 0.4 where the one-sided figure is
+0.2; this engine reports 0.4, and a test asserts that digit for
+digit.
+
+The first rebalance out of cash has drifted weights of zero, so a
+fully invested long-only target carries two-sided turnover 1 and
+costs `cost_rate × value` — it is charged like any other rebalance,
+not waived.
 
 The fixture: two assets on five days, A at 100, 100, 150, 150, 150
 and B flat at 100. A constant 50/50 policy with one day of warmup,
@@ -761,7 +779,7 @@ rebalancing every 2 trading days, cost rate 2%, initial value 1000:
 | 2026-01-09 | 150 | 100 | drift | 1220.1 |
 
 Rebalance 1 (2026-01-06): out of cash, drifted (0, 0), target
-(0.5, 0.5), turnover |0.5 − 0| + |0.5 − 0| = 1:
+(0.5, 0.5), two-sided turnover |0.5 − 0| + |0.5 − 0| = 1:
 
 ```text
 cost  = 0.02 × 1 × 1000 = 20
@@ -772,7 +790,7 @@ Drift (2026-01-07): A gains 50%, so the legs become 735 and 490 —
 value 1225, weights (0.6, 0.4). Nobody traded; prices moved.
 
 Rebalance 2 (2026-01-08): drifted (0.6, 0.4), target (0.5, 0.5),
-turnover |0.5 − 0.6| + |0.5 − 0.4| = 0.2:
+two-sided turnover |0.5 − 0.6| + |0.5 − 0.4| = 0.2:
 
 ```text
 cost  = 0.02 × 0.2 × 1225 = 4.9

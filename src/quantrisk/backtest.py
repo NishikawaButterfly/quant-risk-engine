@@ -24,9 +24,10 @@ would trade every day while charging costs only on the schedule,
 reporting a value path no real portfolio could achieve. Here trades
 happen only on scheduled rebalance days, and every one — including the
 first, out of cash — is charged a proportional cost: ``cost_rate``
-times the turnover (the weight-space distance ``sum |target -
-drifted|``) times the pre-trade portfolio value. With a daily schedule
-and zero costs the two conventions coincide, and a test asserts that.
+times the two-sided turnover (the weight-space distance
+``sum |target - drifted|``, purchases and sales counted alike) times
+the pre-trade portfolio value. With a daily schedule and zero costs
+the two conventions coincide, and a test asserts that.
 
 Days before the policy's declared ``min_history_days`` are held in
 cash, and cash earns exactly zero in this version — no money-market
@@ -181,16 +182,20 @@ class RebalanceRecord:
 
     ``drifted_weights`` are the pre-trade weights the portfolio had
     drifted to (all zero on the first rebalance, out of cash) and
-    ``target_weights`` the policy's decision. ``turnover`` is the
-    weight-space distance ``sum |target - drifted|`` and ``cost`` the
-    currency amount charged: ``cost_rate * turnover * pre-trade
+    ``target_weights`` the policy's decision. ``two_sided_turnover``
+    is the weight-space distance ``sum |target - drifted|`` — the
+    two-sided convention, counting purchases and sales alike. The
+    one-sided convention (purchases only) is half of this whenever
+    pre-trade and target weights sum to the same total, so the field
+    carries its convention in its name. ``cost`` is the currency
+    amount charged: ``cost_rate * two_sided_turnover * pre-trade
     value``.
     """
 
     date: str
     drifted_weights: tuple[float, ...]
     target_weights: tuple[float, ...]
-    turnover: float
+    two_sided_turnover: float
     cost: float
 
 
@@ -287,8 +292,9 @@ def run_backtest(
     caller-supplied policies remain responsible for not reaching
     future data through external state or external data sources.
     Every rebalance, including the first out of cash, is
-    charged ``cost_rate * turnover * pre-trade value`` with turnover
-    ``sum |target - drifted|``.
+    charged ``cost_rate * two_sided_turnover * pre-trade value`` with
+    the two-sided turnover ``sum |target - drifted|``, purchases and
+    sales counted alike.
 
     Raises when a rebalance's cost would consume the whole portfolio,
     or when drifting (possible only with short weights) drives the
@@ -340,10 +346,10 @@ def run_backtest(
                 if holdings is not None
                 else (0.0,) * len(items)
             )
-            turnover = math.fsum(
+            two_sided_turnover = math.fsum(
                 abs(goal - held) for goal, held in zip(target, drifted, strict=True)
             )
-            charge = rate * turnover * value
+            charge = rate * two_sided_turnover * value
             if charge >= value:
                 raise ValueError(
                     f"transaction cost {charge!r} on {day} would consume the whole "
@@ -356,7 +362,7 @@ def run_backtest(
                     date=day,
                     drifted_weights=drifted,
                     target_weights=target,
-                    turnover=turnover,
+                    two_sided_turnover=two_sided_turnover,
                     cost=charge,
                 )
             )
