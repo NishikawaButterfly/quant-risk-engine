@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import importlib.metadata
 import io
@@ -22,20 +21,11 @@ import numpy
 import scipy
 
 import quantrisk
-from quantrisk.cli import main
 from tests import test_feasibility
+from tests.cli_harness import run_cli
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = _REPOSITORY_ROOT / "sample-data" / "portfolio-spec.json"
-
-
-def run_cli(arguments: list[str]) -> tuple[int, str]:
-    """Run the CLI in-process, returning its exit code and stdout."""
-
-    stream = io.StringIO()
-    with contextlib.redirect_stdout(stream):
-        code = main(arguments)
-    return code, stream.getvalue()
 
 
 class SampleRunCase(unittest.TestCase):
@@ -49,8 +39,10 @@ class SampleRunCase(unittest.TestCase):
         holder = tempfile.TemporaryDirectory()
         cls.addClassCleanup(holder.cleanup)
         output = Path(holder.name) / "results"
-        code, _ = run_cli(["run", "--spec", str(_SPEC), "--output", str(output)])
-        assert code == 0
+        code, output_text = run_cli(["run", "--spec", str(_SPEC), "--output", str(output)])
+        # An abort is an ordinary result here: fail the class with what the
+        # CLI said, instead of letting a SystemExit end the whole run.
+        assert code == 0, f"the sample run exited {code}: {output_text}"
         cls.results = json.loads((output / "results.json").read_text(encoding="utf-8"))
         cls.report = (output / "report.md").read_text(encoding="utf-8")
 
