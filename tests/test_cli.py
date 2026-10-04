@@ -2,21 +2,28 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib.metadata
 import io
 import json
 import math
 import platform
 import re
+import shutil
+import subprocess
+import sysconfig
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import numpy
 import scipy
 
 import quantrisk
 from quantrisk.cli import main
+from tests import test_feasibility
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = _REPOSITORY_ROOT / "sample-data" / "portfolio-spec.json"
@@ -313,9 +320,9 @@ class ForceDisciplineTests(unittest.TestCase):
     def test_a_second_run_requires_force(self) -> None:
         code, _ = run_cli(["run", "--spec", str(_SPEC), "--output", str(self.output)])
         self.assertEqual(code, 0)
-        with self.assertRaises(SystemExit) as context:
-            run_cli(["run", "--spec", str(_SPEC), "--output", str(self.output)])
-        self.assertIn("refusing to overwrite", str(context.exception))
+        code, message = run_cli(["run", "--spec", str(_SPEC), "--output", str(self.output)])
+        self.assertEqual(code, 1)
+        self.assertIn("refusing to overwrite", message)
         code, _ = run_cli(["run", "--spec", str(_SPEC), "--output", str(self.output), "--force"])
         self.assertEqual(code, 0)
 
@@ -339,9 +346,9 @@ class ValidateTests(unittest.TestCase):
         )
 
     def test_validate_of_a_missing_spec_fails_with_a_message(self) -> None:
-        with self.assertRaises(SystemExit) as context:
-            run_cli(["validate", "--spec", str(_SPEC.with_name("absent.json"))])
-        self.assertTrue(str(context.exception).startswith("error: "))
+        code, message = run_cli(["validate", "--spec", str(_SPEC.with_name("absent.json"))])
+        self.assertEqual(code, 1)
+        self.assertTrue(message.startswith("error: "), message)
 
 
 class MinimalSpecReportTests(unittest.TestCase):
@@ -452,6 +459,137 @@ class MinimalSpecReportTests(unittest.TestCase):
         self.assertEqual(code, 0)
         report = (output / "report.md").read_text(encoding="utf-8")
         self.assertIn("parametric normal (draws fitted to the portfolio's daily returns)", report)
+
+
+Harness = Callable[[list[str]], tuple[int, str]]
+
+
+class HarnessContractTests(unittest.TestCase):
+    """Both in-process harnesses report what the process would have exited with.
+
+    The interpreter turns a ``SystemExit`` payload into a status: ``None`` is
+    0, an int is itself, and anything else is printed to stderr and exits 1.
+    The harnesses mirror that, so an argparse usage error (2) and an
+    ``error:`` abort (1) stay distinguishable, and a test can assert both the
+    code and what the CLI said.
+    """
+
+    def harnesses(self) -> list[tuple[str, Harness]]:
+        return [("test_cli", run_cli), ("test_feasibility", test_feasibility.run_cli)]
+
+    def outcome(self, harness: Harness, arguments: list[str]) -> tuple[int, str]:
+        try:
+            return harness(arguments)
+        except SystemExit as exc:
+            self.fail(f"SystemExit({exc.code!r}) escaped the harness for {arguments}")
+
+    def test_a_returned_code_comes_back_with_stdout(self) -> None:
+        for name, harness in self.harnesses():
+            with self.subTest(harness=name):
+                code, output = self.outcome(harness, ["validate", "--spec", str(_SPEC)])
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(output)["status"], "valid")
+
+    def test_an_error_message_exits_one_and_is_kept(self) -> None:
+        for name, harness in self.harnesses():
+            with self.subTest(harness=name):
+                code, message = self.outcome(
+                    harness, ["validate", "--spec", str(_SPEC.with_name("absent.json"))]
+                )
+                self.assertEqual(code, 1)
+                self.assertTrue(message.startswith("error: "), message)
+                self.assertIn("absent.json", message)
+
+    def test_a_usage_error_keeps_its_status_and_says_why(self) -> None:
+        for name, harness in self.harnesses():
+            with self.subTest(harness=name):
+                code, message = self.outcome(harness, ["validate"])
+                self.assertEqual(code, 2)
+                self.assertIn("the following arguments are required: --spec", message)
+
+    def test_help_exits_zero_with_its_text(self) -> None:
+        for name, harness in self.harnesses():
+            with self.subTest(harness=name):
+                code, output = self.outcome(harness, ["--help"])
+                self.assertEqual(code, 0)
+                self.assertIn("usage: quantrisk", output)
+
+    def test_a_bare_system_exit_is_success(self) -> None:
+        def exits_bare(arguments: list[str]) -> int:
+            raise SystemExit
+
+        for name, harness in self.harnesses():
+            with (
+                self.subTest(harness=name),
+                mock.patch.dict(harness.__globals__, {"main": exits_bare}),
+            ):
+                self.assertEqual(self.outcome(harness, ["validate"]), (0, ""))
+
+
+class MissingSampleSpecTests(unittest.TestCase):
+    def test_a_missing_sample_spec_fails_its_class_instead_of_ending_the_run(self) -> None:
+        # SampleRunCase runs the CLI in setUpClass, where unittest catches
+        # Exception but not SystemExit: an abort there used to end the whole
+        # run mid-way, with no summary line.
+        class Probe(SampleRunCase):
+            def test_never_reached(self) -> None:  # pragma: no cover - setUpClass fails first
+                pass
+
+        missing = _SPEC.with_name("absent.json")
+        runner = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0)
+        with mock.patch.dict(globals(), {"_SPEC": missing}):
+            try:
+                result = runner.run(unittest.defaultTestLoader.loadTestsFromTestCase(Probe))
+            except SystemExit as exc:
+                self.fail(f"SystemExit({exc.code!r}) escaped setUpClass and would end the run")
+        self.assertEqual(result.testsRun, 0)
+        self.assertEqual(len(result.errors), 1)
+        report = result.errors[0][1]
+        # An ordinary failure that names the derived code and the CLI's message.
+        self.assertIn("exited 1", report)
+        self.assertIn("error: ", report)
+        self.assertIn("absent.json", report)
+
+
+class InstalledEntrypointTests(unittest.TestCase):
+    """The installed ``quantrisk`` script, run as a shell runs it.
+
+    An in-process harness cannot see the status the real process exits with;
+    this checks it at the boundary a user or a CI job sees.
+    """
+
+    def setUp(self) -> None:
+        scripts = sysconfig.get_path("scripts")
+        found = shutil.which("quantrisk", path=scripts)
+        if found is None:
+            try:
+                importlib.metadata.distribution("quant-risk-engine")
+            except importlib.metadata.PackageNotFoundError:
+                self.skipTest("quant-risk-engine is not installed, so there is no entrypoint")
+            self.fail(f"quant-risk-engine is installed but no quantrisk script is in {scripts}")
+        self.script = found
+
+    def run_entrypoint(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - a fixed script with test-controlled arguments
+            [self.script, *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+
+    def test_a_missing_spec_exits_one_with_an_error_line(self) -> None:
+        completed = self.run_entrypoint("validate", "--spec", str(_SPEC.with_name("absent.json")))
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertTrue(completed.stderr.startswith("error: "), completed.stderr)
+        self.assertIn("absent.json", completed.stderr)
+        self.assertEqual(completed.stdout, "")
+
+    def test_a_usage_error_exits_two(self) -> None:
+        completed = self.run_entrypoint("validate")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("usage: quantrisk", completed.stderr)
+        self.assertIn("the following arguments are required: --spec", completed.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover
