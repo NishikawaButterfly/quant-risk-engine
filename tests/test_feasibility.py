@@ -15,8 +15,6 @@ or run to completion.
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import math
 import sys
@@ -29,24 +27,12 @@ from typing import Any
 
 import numpy as np
 
-from quantrisk.cli import main
 from quantrisk.feasibility import SpecFeasibilityError, check_feasibility
 from quantrisk.io import load_spec
+from tests.cli_harness import run_cli as run_cli  # noqa: PLC0414 - re-export, see test_cli
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _SAMPLE_SPEC = _REPOSITORY_ROOT / "sample-data" / "portfolio-spec.json"
-
-
-def run_cli(arguments: list[str]) -> tuple[int, str]:
-    """Run the CLI in-process; a ``SystemExit`` maps to (1, its message)."""
-
-    stream = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(stream):
-            code = main(arguments)
-    except SystemExit as exc:
-        return 1, str(exc)
-    return code, stream.getvalue()
 
 
 class SpecDirectory:
