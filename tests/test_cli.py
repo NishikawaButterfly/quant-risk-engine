@@ -517,6 +517,17 @@ class HarnessContractTests(unittest.TestCase):
             ):
                 self.assertEqual(self.outcome(harness, ["validate"]), (0, ""))
 
+    def test_any_other_status_is_kept(self) -> None:
+        def exits_three(arguments: list[str]) -> int:
+            raise SystemExit(3)
+
+        for name, harness in self.harnesses():
+            with (
+                self.subTest(harness=name),
+                mock.patch.dict(harness.__globals__, {"main": exits_three}),
+            ):
+                self.assertEqual(self.outcome(harness, ["validate"]), (3, ""))
+
 
 class MissingSampleSpecTests(unittest.TestCase):
     def test_a_missing_sample_spec_fails_its_class_instead_of_ending_the_run(self) -> None:
