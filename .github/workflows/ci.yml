@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# PowerShell, the Windows default, takes a multi-line step's exit code from
+# its last command only; bash here runs with -e and -o pipefail on every OS.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   quality:
     name: Python ${{ matrix.python-version }}
